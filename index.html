@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GroceryShopList - סנכרון מהיר</title>
+    
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+        import { getFirestore, collection, addDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+
+        // הגדרות ה-Firebase שלך
+        const firebaseConfig = {
+            apiKey: "AIzaSyAF7sTU_FsEI5TwQ5oXHRbuub6Bhu8yMzk",
+            authDomain: "groceryshoplist-5d684.firebaseapp.com",
+            projectId: "groceryshoplist-5d684",
+            storageBucket: "groceryshoplist-5d684.firebasestorage.app",
+            messagingSenderId: "400360296657",
+            appId: "1:400360296657:web:9273e31824531ea57735f0"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+
+        let itemsToSync = [];
+
+        const pasteBtn = document.getElementById('pasteBtn');
+        const syncBtn = document.getElementById('syncBtn');
+        const previewArea = document.getElementById('previewArea');
+        const statusArea = document.getElementById('statusArea');
+
+        // פונקציה לניקוי הטקסט (כוללת סינון תאריכים ושמות)
+        function parseWhatsAppList(text) {
+            const separatorRegex = /^[-=_~*]+$/;
+            
+            // שלב 1: ניקוי חותמות זמן ושמות של ווטסאפ מכל שורה
+            // מזהה תבנית כמו: [14.4.2026, 10:40:07] שם: 
+            const textWithoutMetadata = text.split('\n').map(line => {
+                return line.replace(/^\[.*?\][^:]+:\s*/, '').trim();
+            }).join('\n');
+
+            // שלב 2: פיצול לפי שורה חדשה ופסיקים, וניקוי סופי
+            return textWithoutMetadata.split(/[\n,]+/)
+                .map(item => item.trim())
+                .filter(item => item.length > 0 && !separatorRegex.test(item));
+        }
+
+        // לחיצה על "הדבק ונקה"
+        pasteBtn.addEventListener('click', async () => {
+            try {
+                const text = await navigator.clipboard.readText();
+                const cleanedList = parseWhatsAppList(text);
+                
+                if (cleanedList.length === 0) {
+                    statusArea.innerHTML = "❌ לא נמצאו מוצרים תקינים בלוח.";
+                    return;
+                }
+
+                itemsToSync = cleanedList;
+                renderPreview();
+                syncBtn.disabled = false;
+                statusArea.innerHTML = `✅ זוהו ${cleanedList.length} מוצרים.`;
+            } catch (err) {
+                statusArea.innerHTML = "❌ שגיאה בגישה ללוח. ודא שאישרת הרשאות.";
+            }
+        });
+
+        function renderPreview() {
+            previewArea.innerHTML = itemsToSync.map(item => `
+                <div class="item-card">
+                    <input type="checkbox" checked disabled>
+                    <span>${item}</span>
+                </div>
+            `).join('');
+        }
+
+        // שליחה ל-Firebase
+        syncBtn.addEventListener('click', async () => {
+            syncBtn.disabled = true;
+            statusArea.innerHTML = "⏳ מסנכרן עם Firebase...";
+            
+            try {
+                await addDoc(collection(db, "shopping_lists"), {
+                    items: itemsToSync,
+                    timestamp: serverTimestamp(),
+                    source: "WhatsApp-Sync"
+                });
+                
+                statusArea.innerHTML = "🚀 הסנכרון הושלם בהצלחה!";
+                previewArea.innerHTML = "";
+                itemsToSync = [];
+            } catch (e) {
+                console.error(e);
+                statusArea.innerHTML = "❌ שגיאה בשמירה ל-Firebase.";
+                syncBtn.disabled = false;
+            }
+        });
+    </script>
+
+    <style>
+        body { font-family: sans-serif; background: #f4f7f6; display: flex; justify-content: center; padding: 20px; }
+        .app-container { background: white; width: 100%; max-width: 400px; padding: 25px; border-radius: 15px; box-shadow: 0 10px 25px rgba(0,0,0,0.1); }
+        h1 { font-size: 1.5rem; color: #075E54; text-align: center; }
+        .main-btn { background: #25D366; color: white; border: none; width: 100%; padding: 15px; border-radius: 10px; font-weight: bold; font-size: 1.1rem; cursor: pointer; margin-bottom: 15px; }
+        .sync-btn { background: #34b7f1; color: white; border: none; width: 100%; padding: 12px; border-radius: 10px; font-weight: bold; cursor: pointer; }
+        .sync-btn:disabled { background: #ccc; }
+        #previewArea { margin: 20px 0; max-height: 300px; overflow-y: auto; }
+        .item-card { display: flex; align-items: center; padding: 10px; border-bottom: 1px solid #eee; }
+        .item-card input { margin-left: 10px; }
+        #statusArea { text-align: center; font-size: 0.9rem; margin-top: 10px; color: #555; }
+    </style>
+</head>
+<body>
+    <div class="app-container">
+        <h1>🛒 Grocery Sync</h1>
+        <button id="pasteBtn" class="main-btn">📋 הדבק ונקה רשימה</button>
+        <div id="statusArea">העתק רשימה מווטסאפ ולחץ על הכפתור</div>
+        <div id="previewArea"></div>
+        <button id="syncBtn" class="sync-btn" disabled>☁️ שלח ל-Firebase</button>
+    </div>
+</body>
+</html>
