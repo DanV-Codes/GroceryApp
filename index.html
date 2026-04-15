@@ -3,11 +3,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>GroceryShopList - סנכרון מהיר</title>
+    <title>רשימת קניות משפחתית</title>
     
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
-        import { getFirestore, collection, addDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+        import { getFirestore, doc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
 
         // הגדרות ה-Firebase שלך
         const firebaseConfig = {
@@ -22,101 +22,258 @@
         const app = initializeApp(firebaseConfig);
         const db = getFirestore(app);
 
-        let itemsToSync = [];
+        // רפרנס קבוע לרשימה המשותפת של המשפחה
+        const listDocRef = doc(db, "shopping_lists", "family_shared_list");
 
+        // משתנים לשמירת נתונים
+        let pastedItems = [];
+        let sharedList = [];
+
+        // חיבור לאלמנטים במסך הבית
+        const homeScreen = document.getElementById('home-screen');
         const pasteBtn = document.getElementById('pasteBtn');
-        const syncBtn = document.getElementById('syncBtn');
         const previewArea = document.getElementById('previewArea');
+        const btnAddExisting = document.getElementById('btnAddExisting');
+        const btnGoShop = document.getElementById('btnGoShop');
         const statusArea = document.getElementById('statusArea');
 
-        // פונקציה לניקוי הטקסט (כוללת סינון תאריכים ושמות)
+        // חיבור לאלמנטים במסך הסופר
+        const shopScreen = document.getElementById('shop-screen');
+        const shopListArea = document.getElementById('shopListArea');
+        const btnBackHome = document.getElementById('btnBackHome');
+        const btnClearPurchased = document.getElementById('btnClearPurchased');
+
+        // ==========================================
+        // 1. האזנה בזמן אמת לרשימה מ-Firebase
+        // ==========================================
+        onSnapshot(listDocRef, (docSnap) => {
+            if (docSnap.exists()) {
+                sharedList = docSnap.data().items || [];
+            } else {
+                sharedList = [];
+            }
+            renderShopList(); // עדכון אוטומטי של תצוגת הסופר
+        });
+
+        // ==========================================
+        // 2. לוגיקת הניקוי החכמה (Parsing)
+        // ==========================================
         function parseWhatsAppList(text) {
-            const separatorRegex = /^[-=_~*]+$/;
-            
-            // שלב 1: ניקוי חותמות זמן ושמות של ווטסאפ מכל שורה
-            // מזהה תבנית כמו: [14.4.2026, 10:40:07] שם: 
-            const textWithoutMetadata = text.split('\n').map(line => {
-                return line.replace(/^\[.*?\][^:]+:\s*/, '').trim();
+            // העלמת תווים נסתרים שווטסאפ מוסיף (LTR/RTL marks)
+            let cleanText = text.replace(/[\u200E\u200F\u202A-\u202E]/g, '');
+
+            // מעבר שורה-שורה וגילוח התאריך והשם לפני שמפצלים פסיקים
+            const textWithoutMetadata = cleanText.split('\n').map(line => {
+                // מזהה דפוס של [תאריך, שעה] שם: ומסיר אותו
+                return line.replace(/^(?:\[[\d\s.,/:-]+\]|[\d\s.,/:-]+\s*-)\s*[^:]+:\s*/, '').trim();
             }).join('\n');
 
-            // שלב 2: פיצול לפי שורה חדשה ופסיקים, וניקוי סופי
+            const separatorRegex = /^[-=_~*]+$/;
+            
+            // עכשיו בטוח לפצל לפי פסיקים ולפי שורות
             return textWithoutMetadata.split(/[\n,]+/)
                 .map(item => item.trim())
                 .filter(item => item.length > 0 && !separatorRegex.test(item));
         }
 
-        // לחיצה על "הדבק ונקה"
+        // ==========================================
+        // 3. אירועים - מסך הבית
+        // ==========================================
         pasteBtn.addEventListener('click', async () => {
             try {
                 const text = await navigator.clipboard.readText();
                 const cleanedList = parseWhatsAppList(text);
                 
                 if (cleanedList.length === 0) {
-                    statusArea.innerHTML = "❌ לא נמצאו מוצרים תקינים בלוח.";
+                    showStatus("❌ הלוח ריק או שלא זוהו מוצרים.", "error");
                     return;
                 }
 
-                itemsToSync = cleanedList;
+                pastedItems = cleanedList;
                 renderPreview();
-                syncBtn.disabled = false;
-                statusArea.innerHTML = `✅ זוהו ${cleanedList.length} מוצרים.`;
+                btnAddExisting.style.display = 'block';
+                showStatus(`✅ זוהו ${cleanedList.length} מוצרים מוכנים להוספה.`, "success");
             } catch (err) {
-                statusArea.innerHTML = "❌ שגיאה בגישה ללוח. ודא שאישרת הרשאות.";
+                showStatus("❌ שגיאה בקריאת הלוח.", "error");
             }
         });
 
         function renderPreview() {
-            previewArea.innerHTML = itemsToSync.map(item => `
-                <div class="item-card">
-                    <input type="checkbox" checked disabled>
-                    <span>${item}</span>
+            previewArea.innerHTML = pastedItems.map(item => `
+                <div class="preview-item">🔸 ${item}</div>
+            `).join('');
+        }
+
+        // הוספה לרשימה הקיימת ב-Firebase
+        btnAddExisting.addEventListener('click', async () => {
+            btnAddExisting.disabled = true;
+            btnAddExisting.textContent = "⏳ שומר...";
+            
+            try {
+                // הפיכת המחרוזות לאובייקטים עם מזהה ייחודי
+                const newItems = pastedItems.map(name => ({
+                    id: Date.now() + Math.random().toString(16).slice(2),
+                    name: name,
+                    isPurchased: false
+                }));
+
+                const updatedList = sharedList.concat(newItems);
+                
+                // שמירה מאוחדת (Merge) לתוך הרשימה המשותפת
+                await setDoc(listDocRef, { items: updatedList }, { merge: true });
+                
+                pastedItems = [];
+                previewArea.innerHTML = "";
+                btnAddExisting.style.display = 'none';
+                showStatus("המוצרים התווספו בהצלחה לרשימה המשותפת! 🛒", "success");
+            } catch (e) {
+                console.error(e);
+                showStatus("❌ שגיאה בשמירה.", "error");
+            } finally {
+                btnAddExisting.disabled = false;
+                btnAddExisting.innerHTML = "📥 העבר לרשימה הקיימת";
+            }
+        });
+
+        // מעבר למסך הסופר
+        btnGoShop.addEventListener('click', () => {
+            homeScreen.classList.remove('active');
+            shopScreen.classList.add('active');
+            window.scrollTo(0, 0);
+        });
+
+        function showStatus(msg, type) {
+            statusArea.textContent = msg;
+            statusArea.style.color = type === 'error' ? '#dc3545' : '#198754';
+        }
+
+        // ==========================================
+        // 4. אירועים ותצוגה - מסך הסופר
+        // ==========================================
+        btnBackHome.addEventListener('click', () => {
+            shopScreen.classList.remove('active');
+            homeScreen.classList.add('active');
+        });
+
+        function renderShopList() {
+            if (sharedList.length === 0) {
+                shopListArea.innerHTML = `<div style="text-align:center; padding: 20px; color: #777;">הרשימה ריקה. איזה כיף! 🎉</div>`;
+                return;
+            }
+
+            // מציג קודם את מה שלא נקנה, ואז את מה שנקנה למטה
+            const sortedList = [...sharedList].sort((a, b) => a.isPurchased - b.isPurchased);
+
+            shopListArea.innerHTML = sortedList.map(item => `
+                <div class="shop-item ${item.isPurchased ? 'purchased' : ''}" onclick="toggleItem('${item.id}')">
+                    <div class="checkbox-circle">
+                        ${item.isPurchased ? '✔️' : ''}
+                    </div>
+                    <span>${item.name}</span>
                 </div>
             `).join('');
         }
 
-        // שליחה ל-Firebase
-        syncBtn.addEventListener('click', async () => {
-            syncBtn.disabled = true;
-            statusArea.innerHTML = "⏳ מסנכרן עם Firebase...";
-            
-            try {
-                await addDoc(collection(db, "shopping_lists"), {
-                    items: itemsToSync,
-                    timestamp: serverTimestamp(),
-                    source: "WhatsApp-Sync"
-                });
-                
-                statusArea.innerHTML = "🚀 הסנכרון הושלם בהצלחה!";
-                previewArea.innerHTML = "";
-                itemsToSync = [];
-            } catch (e) {
-                console.error(e);
-                statusArea.innerHTML = "❌ שגיאה בשמירה ל-Firebase.";
-                syncBtn.disabled = false;
+        // פונקציה שהופכת מוצר לנקנה/לא-נקנה (זמינה גלובלית ל-onclick)
+        window.toggleItem = async function(id) {
+            // מזהה את הפריט שעליו לחצנו
+            const itemIndex = sharedList.findIndex(i => i.id === id);
+            if (itemIndex > -1) {
+                // הופך את המצב המקומי
+                sharedList[itemIndex].isPurchased = !sharedList[itemIndex].isPurchased;
+                // מעדכן מיד את Firebase (ששולח עדכון חזרה לכל מי שמחובר)
+                await setDoc(listDocRef, { items: sharedList }, { merge: true });
+            }
+        }
+
+        // ניקוי מוצרים שנרכשו
+        btnClearPurchased.addEventListener('click', async () => {
+            const confirmMsg = confirm("למחוק מהרשימה את כל המוצרים שכבר סימנת בעגלה?");
+            if (confirmMsg) {
+                const unpurchasedOnly = sharedList.filter(item => !item.isPurchased);
+                await setDoc(listDocRef, { items: unpurchasedOnly }, { merge: true });
             }
         });
+
     </script>
 
     <style>
-        body { font-family: sans-serif; background: #f4f7f6; display: flex; justify-content: center; padding: 20px; }
-        .app-container { background: white; width: 100%; max-width: 400px; padding: 25px; border-radius: 15px; box-shadow: 0 10px 25px rgba(0,0,0,0.1); }
-        h1 { font-size: 1.5rem; color: #075E54; text-align: center; }
-        .main-btn { background: #25D366; color: white; border: none; width: 100%; padding: 15px; border-radius: 10px; font-weight: bold; font-size: 1.1rem; cursor: pointer; margin-bottom: 15px; }
-        .sync-btn { background: #34b7f1; color: white; border: none; width: 100%; padding: 12px; border-radius: 10px; font-weight: bold; cursor: pointer; }
-        .sync-btn:disabled { background: #ccc; }
-        #previewArea { margin: 20px 0; max-height: 300px; overflow-y: auto; }
-        .item-card { display: flex; align-items: center; padding: 10px; border-bottom: 1px solid #eee; }
-        .item-card input { margin-left: 10px; }
-        #statusArea { text-align: center; font-size: 0.9rem; margin-top: 10px; color: #555; }
+        * { box-sizing: border-box; font-family: system-ui, -apple-system, sans-serif; }
+        body { background: #f0f2f5; margin: 0; padding: 0; display: flex; justify-content: center; }
+        .app-container { width: 100%; max-width: 450px; background: white; min-height: 100vh; position: relative; }
+        
+        .screen { display: none; padding: 20px; padding-bottom: 80px; }
+        .screen.active { display: block; animation: fadeIn 0.3s ease; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+
+        h1 { color: #075E54; text-align: center; font-size: 1.5rem; margin-bottom: 25px; border-bottom: 2px solid #eee; padding-bottom: 10px;}
+        
+        /* כפתורים כלליים */
+        button { width: 100%; padding: 16px; border: none; border-radius: 12px; font-weight: bold; font-size: 1.1rem; cursor: pointer; transition: 0.2s; margin-bottom: 15px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }
+        button:active { transform: scale(0.98); }
+        
+        .btn-paste { background: #25D366; color: white; }
+        .btn-add { background: #007bff; color: white; display: none; }
+        .btn-shop { background: #ffc107; color: #333; margin-top: 30px; border: 2px solid #e0a800; }
+        .btn-back { background: #f8f9fa; color: #333; border: 1px solid #ddd; padding: 12px;}
+        .btn-clear { background: #dc3545; color: white; padding: 12px;}
+
+        /* אזור התצוגה המקדימה */
+        #previewArea { max-height: 250px; overflow-y: auto; background: #fafafa; border-radius: 8px; margin-bottom: 15px; }
+        .preview-item { padding: 10px; border-bottom: 1px solid #eee; color: #444; }
+        #statusArea { text-align: center; font-weight: bold; margin-bottom: 15px; min-height: 20px;}
+
+        /* מסך הסופר - עיצוב המוצרים */
+        .shop-item { 
+            display: flex; align-items: center; padding: 16px; 
+            background: white; margin-bottom: 10px; border-radius: 12px; 
+            box-shadow: 0 2px 8px rgba(0,0,0,0.06); border: 1px solid #eee;
+            cursor: pointer; transition: all 0.2s ease;
+        }
+        .checkbox-circle {
+            width: 26px; height: 26px; border-radius: 50%; border: 2px solid #ccc;
+            margin-left: 15px; display: flex; align-items: center; justify-content: center;
+            font-size: 14px; transition: 0.2s;
+        }
+        
+        /* מצב קנוי (מסומן אפור עם קו) */
+        .shop-item.purchased { background: #f8f9fa; border-color: transparent; box-shadow: none; }
+        .shop-item.purchased span { text-decoration: line-through; color: #adb5bd; }
+        .shop-item.purchased .checkbox-circle { background: #25D366; border-color: #25D366; color: white; }
+
+        /* תפריט תחתון צף למסך הסופר */
+        .bottom-bar {
+            position: fixed; bottom: 0; left: 0; right: 0; background: white;
+            padding: 15px 20px; box-shadow: 0 -4px 10px rgba(0,0,0,0.05);
+            display: flex; gap: 10px; max-width: 450px; margin: 0 auto;
+        }
+        .bottom-bar button { margin: 0; font-size: 1rem; }
     </style>
 </head>
 <body>
     <div class="app-container">
-        <h1>🛒 Grocery Sync</h1>
-        <button id="pasteBtn" class="main-btn">📋 הדבק ונקה רשימה</button>
-        <div id="statusArea">העתק רשימה מווטסאפ ולחץ על הכפתור</div>
-        <div id="previewArea"></div>
-        <button id="syncBtn" class="sync-btn" disabled>☁️ שלח ל-Firebase</button>
+        
+        <div id="home-screen" class="screen active">
+            <h1>🛒 ניהול רשימה משפחתית</h1>
+            <button id="pasteBtn" class="btn-paste">📋 הדבק ונקה מהלוח</button>
+            <div id="statusArea"></div>
+            <div id="previewArea"></div>
+            <button id="btnAddExisting" class="btn-add">📥 העבר לרשימה הקיימת</button>
+            
+            <button id="btnGoShop" class="btn-shop">🛒 אני בסופר (פתח רשימה)</button>
+        </div>
+
+        <div id="shop-screen" class="screen">
+            <h1>🛒 עגלת קניות</h1>
+            <div id="shopListArea">
+                </div>
+            
+            <div class="bottom-bar">
+                <button id="btnBackHome" class="btn-back">🔙 חזור</button>
+                <button id="btnClearPurchased" class="btn-clear">🗑️ נקה מה שנקנה</button>
+            </div>
+        </div>
+
     </div>
 </body>
 </html>
