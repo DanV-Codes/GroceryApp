@@ -22,67 +22,65 @@
         const app = initializeApp(firebaseConfig);
         const db = getFirestore(app);
 
-        // רפרנס קבוע לרשימה המשותפת של המשפחה
-        const listDocRef = doc(db, "shopping_lists", "family_shared_list");
+        // שינוי נתיב המסמך כדי לתמוך במבנה החדש של מרובה-רשימות
+        const listDocRef = doc(db, "shopping_lists", "family_lists_manager");
 
-        // משתנים לשמירת נתונים
         let pastedItems = [];
-        let sharedList = [];
+        let allLists = [];
+        let currentViewedListId = null; // מזהה הרשימה שפתוחה כרגע במסך הסופר
 
-        // חיבור לאלמנטים במסך הבית
+        // חיבור לאלמנטים
         const homeScreen = document.getElementById('home-screen');
+        const shopScreen = document.getElementById('shop-screen');
+        
         const pasteBtn = document.getElementById('pasteBtn');
         const previewArea = document.getElementById('previewArea');
         const btnAddExisting = document.getElementById('btnAddExisting');
         const btnGoShop = document.getElementById('btnGoShop');
+        const btnCreateList = document.getElementById('btnCreateList');
         const statusArea = document.getElementById('statusArea');
-
-        // חיבור לאלמנטים במסך הסופר
-        const shopScreen = document.getElementById('shop-screen');
+        const openListStatus = document.getElementById('openListStatus');
+        const historyListsArea = document.getElementById('historyListsArea');
         const shopListArea = document.getElementById('shopListArea');
+        const shopListTitle = document.getElementById('shopListTitle');
         const btnBackHome = document.getElementById('btnBackHome');
-        const btnClearPurchased = document.getElementById('btnClearPurchased');
+
+        // פונקציית עזר ליצירת תאריך מעוצב
+        function getFormattedDate() {
+            const d = new Date();
+            return `${d.getDate().toString().padStart(2, '0')}/${(d.getMonth()+1).toString().padStart(2, '0')}/${d.getFullYear()} ${d.getHours().toString().padStart(2,'0')}:${d.getMinutes().toString().padStart(2,'0')}`;
+        }
 
         // ==========================================
-        // 1. האזנה בזמן אמת לרשימה מ-Firebase
+        // 1. האזנה בזמן אמת ל-Firebase
         // ==========================================
         onSnapshot(listDocRef, (docSnap) => {
             if (docSnap.exists()) {
-                sharedList = docSnap.data().items || [];
+                allLists = docSnap.data().lists || [];
             } else {
-                sharedList = [];
+                allLists = [];
             }
-            renderShopList(); // עדכון אוטומטי של תצוגת הסופר
+            renderHomeScreen();
+            if (currentViewedListId) renderShopList(); // עדכון אוטומטי גם אם אנחנו בתוך רשימה
         });
 
         // ==========================================
-        // 2. לוגיקת הניקוי החכמה (Parsing) - זיהוי מדויק לפי סוגריים מרובעים
+        // 2. לוגיקת הניקוי החכמה
         // ==========================================
         function parseWhatsAppList(text) {
-            // העלמת תווים נסתרים שווטסאפ שותלת (LTR/RTL marks)
             let cleanText = text.replace(/[\u200E\u200F\u202A-\u202E]/g, '');
 
-            // מעבר שורה-שורה וגילוח התאריך והשם
             const textWithoutMetadata = cleanText.split('\n').map(line => {
                 let currentLine = line.trim();
-                
-                // בודקים אם השורה מתחילה בסוגריים מרובעים של ווטסאפ
                 if (currentLine.startsWith('[')) {
-                    // מוצאים את המיקום של סגירת הסוגריים
                     const closeBracketIndex = currentLine.indexOf(']');
-                    
                     if (closeBracketIndex > -1) {
-                        // מחפשים את הנקודתיים *רק אחרי* שהסוגריים נסגרו (כדי לדלג על השעה)
                         const colonAfterNameIndex = currentLine.indexOf(':', closeBracketIndex);
-                        
                         if (colonAfterNameIndex > -1) {
-                            // חותכים הכל עד הנקודתיים של השם (כולל) ומשאירים רק את המוצרים
                             return currentLine.substring(colonAfterNameIndex + 1).trim();
                         }
                     }
                 }
-                
-                // גיבוי לפורמט ווטסאפ אנדרואיד ישן (תאריך, שעה - שם:)
                 const dashIndex = currentLine.indexOf(' - ');
                 if (dashIndex > 0 && dashIndex < 25) {
                     const colonAfterDashIndex = currentLine.indexOf(':', dashIndex);
@@ -90,21 +88,58 @@
                         return currentLine.substring(colonAfterDashIndex + 1).trim();
                     }
                 }
-                
-                return currentLine; // אם זו שורה רגילה בלי תאריכים, פשוט מחזירים אותה
+                return currentLine;
             }).join('\n');
 
             const separatorRegex = /^[-=_~*]+$/;
-            
-            // עכשיו בטוח לפצל לפי פסיקים ולפי שורות
             return textWithoutMetadata.split(/[\n,]+/)
                 .map(item => item.trim())
                 .filter(item => item.length > 0 && !separatorRegex.test(item));
         }
 
         // ==========================================
-        // 3. אירועים - מסך הבית
+        // 3. רינדור מסך הבית וניהול היסטוריה
         // ==========================================
+        function renderHomeScreen() {
+            const openList = allLists.find(l => l.status === 'open');
+            const lockedLists = allLists.filter(l => l.status === 'locked').sort((a,b) => b.id - a.id); // החדש ביותר למעלה
+
+            if (openList) {
+                openListStatus.innerHTML = `🟢 יש רשימה פעילה (${openList.items.length} מוצרים)`;
+                btnGoShop.style.display = 'block';
+                btnCreateList.style.display = 'none';
+            } else {
+                openListStatus.innerHTML = `🔴 אין רשימה פתוחה.`;
+                btnGoShop.style.display = 'none';
+                btnCreateList.style.display = 'block';
+            }
+
+            if (lockedLists.length === 0) {
+                historyListsArea.innerHTML = '<div style="color:#888; text-align:center; font-size:0.9rem;">אין היסטוריית קניות</div>';
+            } else {
+                historyListsArea.innerHTML = lockedLists.map(l => `
+                    <div class="history-card" onclick="openShopView(${l.id})">
+                        <div class="history-title">🛒 רשימה [${l.lockedAt}]</div>
+                        <div class="history-count">${l.items.length} מוצרים</div>
+                    </div>
+                `).join('');
+            }
+        }
+
+        // יצירת רשימה חדשה לגמרי
+        btnCreateList.addEventListener('click', async () => {
+            const newList = {
+                id: Date.now(),
+                status: 'open',
+                lockedAt: null,
+                items: []
+            };
+            allLists.push(newList);
+            await setDoc(listDocRef, { lists: allLists }, { merge: true });
+            showStatus("רשימה חדשה נפתחה!", "success");
+        });
+
+        // הדבקה מהלוח
         pasteBtn.addEventListener('click', async () => {
             try {
                 const text = await navigator.clipboard.readText();
@@ -118,9 +153,9 @@
                 pastedItems = cleanedList;
                 renderPreview();
                 btnAddExisting.style.display = 'block';
-                showStatus(`✅ זוהו ${cleanedList.length} מוצרים מוכנים להוספה.`, "success");
+                showStatus(`✅ זוהו ${cleanedList.length} מוצרים.`, "success");
             } catch (err) {
-                showStatus("❌ שגיאה בקריאת הלוח.", "error");
+                showStatus("❌ שגיאה בגישה ללוח.", "error");
             }
         });
 
@@ -130,65 +165,80 @@
             `).join('');
         }
 
-        // הוספה לרשימה הקיימת ב-Firebase
+        // שליחת מוצרים לרשימה האחרונה שפתוחה
         btnAddExisting.addEventListener('click', async () => {
             btnAddExisting.disabled = true;
-            btnAddExisting.textContent = "⏳ שומר...";
             
-            try {
-                // הפיכת המחרוזות לאובייקטים עם מזהה ייחודי
-                const newItems = pastedItems.map(name => ({
-                    id: Date.now() + Math.random().toString(16).slice(2),
-                    name: name,
-                    isPurchased: false
-                }));
-
-                const updatedList = sharedList.concat(newItems);
-                
-                // שמירה מאוחדת (Merge) לתוך הרשימה המשותפת
-                await setDoc(listDocRef, { items: updatedList }, { merge: true });
-                
-                pastedItems = [];
-                previewArea.innerHTML = "";
-                btnAddExisting.style.display = 'none';
-                showStatus("המוצרים התווספו בהצלחה לרשימה המשותפת! 🛒", "success");
-            } catch (e) {
-                console.error(e);
-                showStatus("❌ שגיאה בשמירה.", "error");
-            } finally {
-                btnAddExisting.disabled = false;
-                btnAddExisting.innerHTML = "📥 העבר לרשימה הקיימת";
+            let openList = allLists.find(l => l.status === 'open');
+            // אם במקרה אין רשימה פתוחה, נייצר אחת אוטומטית
+            if (!openList) {
+                openList = { id: Date.now(), status: 'open', lockedAt: null, items: [] };
+                allLists.push(openList);
             }
+
+            const newItems = pastedItems.map(name => ({
+                id: Date.now() + Math.random().toString(16).slice(2),
+                name: name,
+                isPurchased: false
+            }));
+
+            openList.items = openList.items.concat(newItems);
+            
+            await setDoc(listDocRef, { lists: allLists }, { merge: true });
+            pastedItems = [];
+            previewArea.innerHTML = "";
+            btnAddExisting.style.display = 'none';
+            showStatus("המוצרים התווספו לרשימה הפעילה! 🛒", "success");
+            btnAddExisting.disabled = false;
         });
 
-        // מעבר למסך הסופר
-        btnGoShop.addEventListener('click', () => {
-            homeScreen.classList.remove('active');
-            shopScreen.classList.add('active');
-            window.scrollTo(0, 0);
+        // לחיצה על "אני בסופר" - נועלת את הרשימה ומכניסה אליה
+        btnGoShop.addEventListener('click', async () => {
+            const openList = allLists.find(l => l.status === 'open');
+            if (openList) {
+                openList.status = 'locked';
+                openList.lockedAt = getFormattedDate();
+                currentViewedListId = openList.id;
+                await setDoc(listDocRef, { lists: allLists }, { merge: true });
+                openShopView(currentViewedListId);
+            }
         });
 
         function showStatus(msg, type) {
             statusArea.textContent = msg;
             statusArea.style.color = type === 'error' ? '#dc3545' : '#198754';
+            setTimeout(() => { statusArea.textContent = ""; }, 4000);
         }
 
         // ==========================================
-        // 4. אירועים ותצוגה - מסך הסופר
+        // 4. מסך הסופר (קריאה מהרשימה)
         // ==========================================
+        window.openShopView = function(listId) {
+            currentViewedListId = listId;
+            homeScreen.classList.remove('active');
+            shopScreen.classList.add('active');
+            window.scrollTo(0, 0);
+            renderShopList();
+        }
+
         btnBackHome.addEventListener('click', () => {
+            currentViewedListId = null;
             shopScreen.classList.remove('active');
             homeScreen.classList.add('active');
         });
 
         function renderShopList() {
-            if (sharedList.length === 0) {
-                shopListArea.innerHTML = `<div style="text-align:center; padding: 20px; color: #777;">הרשימה ריקה. איזה כיף! 🎉</div>`;
+            const listToRender = allLists.find(l => l.id === currentViewedListId);
+            if (!listToRender) return;
+
+            shopListTitle.textContent = listToRender.lockedAt ? `רשימה מ-${listToRender.lockedAt}` : "רשימה פעילה";
+
+            if (listToRender.items.length === 0) {
+                shopListArea.innerHTML = `<div style="text-align:center; padding: 20px; color: #777;">הרשימה ריקה.</div>`;
                 return;
             }
 
-            // מציג קודם את מה שלא נקנה, ואז את מה שנקנה למטה
-            const sortedList = [...sharedList].sort((a, b) => a.isPurchased - b.isPurchased);
+            const sortedList = [...listToRender.items].sort((a, b) => a.isPurchased - b.isPurchased);
 
             shopListArea.innerHTML = sortedList.map(item => `
                 <div class="shop-item ${item.isPurchased ? 'purchased' : ''}" onclick="toggleItem('${item.id}')">
@@ -200,26 +250,17 @@
             `).join('');
         }
 
-        // פונקציה שהופכת מוצר לנקנה/לא-נקנה (זמינה גלובלית ל-onclick)
-        window.toggleItem = async function(id) {
-            // מזהה את הפריט שעליו לחצנו
-            const itemIndex = sharedList.findIndex(i => i.id === id);
-            if (itemIndex > -1) {
-                // הופך את המצב המקומי
-                sharedList[itemIndex].isPurchased = !sharedList[itemIndex].isPurchased;
-                // מעדכן מיד את Firebase (ששולח עדכון חזרה לכל מי שמחובר)
-                await setDoc(listDocRef, { items: sharedList }, { merge: true });
+        // סימון מוצר (V) נשמר מיד ב-Firebase
+        window.toggleItem = async function(itemId) {
+            const listIndex = allLists.findIndex(l => l.id === currentViewedListId);
+            if (listIndex > -1) {
+                const itemIndex = allLists[listIndex].items.findIndex(i => i.id === itemId);
+                if (itemIndex > -1) {
+                    allLists[listIndex].items[itemIndex].isPurchased = !allLists[listIndex].items[itemIndex].isPurchased;
+                    await setDoc(listDocRef, { lists: allLists }, { merge: true });
+                }
             }
         }
-
-        // ניקוי מוצרים שנרכשו
-        btnClearPurchased.addEventListener('click', async () => {
-            const confirmMsg = confirm("למחוק מהרשימה את כל המוצרים שכבר סימנת בעגלה?");
-            if (confirmMsg) {
-                const unpurchasedOnly = sharedList.filter(item => !item.isPurchased);
-                await setDoc(listDocRef, { items: unpurchasedOnly }, { merge: true });
-            }
-        });
 
     </script>
 
@@ -232,24 +273,36 @@
         .screen.active { display: block; animation: fadeIn 0.3s ease; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
 
-        h1 { color: #075E54; text-align: center; font-size: 1.5rem; margin-bottom: 25px; border-bottom: 2px solid #eee; padding-bottom: 10px;}
+        h1 { color: #075E54; text-align: center; font-size: 1.5rem; margin-bottom: 10px; border-bottom: 2px solid #eee; padding-bottom: 10px;}
+        .subtitle { text-align: center; color: #666; font-size: 0.95rem; margin-bottom: 25px; font-weight: bold;}
         
-        /* כפתורים כלליים */
         button { width: 100%; padding: 16px; border: none; border-radius: 12px; font-weight: bold; font-size: 1.1rem; cursor: pointer; transition: 0.2s; margin-bottom: 15px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }
         button:active { transform: scale(0.98); }
         
         .btn-paste { background: #25D366; color: white; }
         .btn-add { background: #007bff; color: white; display: none; }
-        .btn-shop { background: #ffc107; color: #333; margin-top: 30px; border: 2px solid #e0a800; }
-        .btn-back { background: #f8f9fa; color: #333; border: 1px solid #ddd; padding: 12px;}
-        .btn-clear { background: #dc3545; color: white; padding: 12px;}
+        .btn-shop { background: #ffc107; color: #333; margin-top: 10px; border: 2px solid #e0a800; display:none;}
+        .btn-create { background: #6c757d; color: white; margin-top: 10px; display:none;}
+        .btn-back { background: #f8f9fa; color: #333; border: 1px solid #ddd; padding: 12px; border-radius: 50px;}
 
-        /* אזור התצוגה המקדימה */
-        #previewArea { max-height: 250px; overflow-y: auto; background: #fafafa; border-radius: 8px; margin-bottom: 15px; }
+        #previewArea { max-height: 200px; overflow-y: auto; background: #fafafa; border-radius: 8px; margin-bottom: 15px; }
         .preview-item { padding: 10px; border-bottom: 1px solid #eee; color: #444; }
-        #statusArea { text-align: center; font-weight: bold; margin-bottom: 15px; min-height: 20px;}
+        #statusArea { text-align: center; font-weight: bold; min-height: 20px; margin-bottom: 10px;}
 
-        /* מסך הסופר - עיצוב המוצרים */
+        .section-title { font-size: 1.2rem; color: #333; margin: 30px 0 15px 0; border-bottom: 2px solid #25D366; display: inline-block; padding-bottom: 5px;}
+        
+        /* רשימות קודמות (היסטוריה) */
+        .history-card { 
+            background: #fff; border: 1px solid #e0e0e0; padding: 15px; 
+            border-radius: 10px; margin-bottom: 10px; display: flex; 
+            justify-content: space-between; align-items: center; 
+            box-shadow: 0 2px 4px rgba(0,0,0,0.02); cursor: pointer;
+        }
+        .history-card:active { background: #f8f9fa; }
+        .history-title { font-weight: bold; color: #075E54; }
+        .history-count { background: #eee; padding: 4px 10px; border-radius: 20px; font-size: 0.85rem; color: #555;}
+
+        /* עיצוב המוצרים במסך הסופר */
         .shop-item { 
             display: flex; align-items: center; padding: 16px; 
             background: white; margin-bottom: 10px; border-radius: 12px; 
@@ -261,43 +314,42 @@
             margin-left: 15px; display: flex; align-items: center; justify-content: center;
             font-size: 14px; transition: 0.2s;
         }
-        
-        /* מצב קנוי (מסומן אפור עם קו) */
         .shop-item.purchased { background: #f8f9fa; border-color: transparent; box-shadow: none; }
         .shop-item.purchased span { text-decoration: line-through; color: #adb5bd; }
         .shop-item.purchased .checkbox-circle { background: #25D366; border-color: #25D366; color: white; }
 
-        /* תפריט תחתון צף למסך הסופר */
-        .bottom-bar {
-            position: fixed; bottom: 0; left: 0; right: 0; background: white;
-            padding: 15px 20px; box-shadow: 0 -4px 10px rgba(0,0,0,0.05);
-            display: flex; gap: 10px; max-width: 450px; margin: 0 auto;
-        }
-        .bottom-bar button { margin: 0; font-size: 1rem; }
+        .top-bar-shop { display: flex; align-items: center; margin-bottom: 20px; gap:15px; border-bottom: 1px solid #eee; padding-bottom: 15px;}
+        .top-bar-shop button { width: auto; margin:0; }
+        .top-bar-shop h2 { margin:0; font-size: 1.2rem; color:#333;}
     </style>
 </head>
 <body>
     <div class="app-container">
         
         <div id="home-screen" class="screen active">
-            <h1>🛒 ניהול רשימה משפחתית</h1>
+            <h1>🛒 לוח בקרה</h1>
+            <div id="openListStatus" class="subtitle">טוען נתונים...</div>
+
             <button id="pasteBtn" class="btn-paste">📋 הדבק ונקה מהלוח</button>
             <div id="statusArea"></div>
             <div id="previewArea"></div>
-            <button id="btnAddExisting" class="btn-add">📥 העבר לרשימה הקיימת</button>
+            <button id="btnAddExisting" class="btn-add">📥 העבר לרשימה הפעילה</button>
             
-            <button id="btnGoShop" class="btn-shop">🛒 אני בסופר (פתח רשימה)</button>
+            <button id="btnGoShop" class="btn-shop">🛒 אני בסופר (נעל רשימה והיכנס)</button>
+            <button id="btnCreateList" class="btn-create">➕ צור רשימה חדשה</button>
+
+            <div class="section-title">רשימות קודמות</div>
+            <div id="historyListsArea"></div>
         </div>
 
         <div id="shop-screen" class="screen">
-            <h1>🛒 עגלת קניות</h1>
+            <div class="top-bar-shop">
+                <button id="btnBackHome" class="btn-back">🔙 חזור</button>
+                <h2 id="shopListTitle">עגלת קניות</h2>
+            </div>
+            
             <div id="shopListArea">
                 </div>
-            
-            <div class="bottom-bar">
-                <button id="btnBackHome" class="btn-back">🔙 חזור</button>
-                <button id="btnClearPurchased" class="btn-clear">🗑️ נקה מה שנקנה</button>
-            </div>
         </div>
 
     </div>
