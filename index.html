@@ -55,27 +55,43 @@
             renderShopList(); // עדכון אוטומטי של תצוגת הסופר
         });
 
-// ==========================================
-        // 2. לוגיקת הניקוי החכמה (Parsing) - גרסה משופרת
+        // ==========================================
+        // 2. לוגיקת הניקוי החכמה (Parsing) - זיהוי מדויק לפי סוגריים מרובעים
         // ==========================================
         function parseWhatsAppList(text) {
             // העלמת תווים נסתרים שווטסאפ שותלת (LTR/RTL marks)
             let cleanText = text.replace(/[\u200E\u200F\u202A-\u202E]/g, '');
 
-            // מעבר שורה-שורה וגילוח התאריך והשם לפני שמפצלים פסיקים
+            // מעבר שורה-שורה וגילוח התאריך והשם
             const textWithoutMetadata = cleanText.split('\n').map(line => {
-                const colonIndex = line.indexOf(':');
+                let currentLine = line.trim();
                 
-                // אם יש נקודתיים בשורה, נבדוק אם מה שלפניהם נראה כמו קידומת של ווטסאפ
-                if (colonIndex > -1) {
-                    const prefix = line.substring(0, colonIndex);
-                    // אם הקידומת מכילה מספרים (שעה/תאריך) וסימנים אופייניים, זו קידומת ווטסאפ
-                    if (/[\d]/.test(prefix) && (prefix.includes('[') || prefix.includes('-') || prefix.includes(','))) {
-                        // חותכים הכל ומשאירים רק את מה שאחרי הנקודתיים
-                        return line.substring(colonIndex + 1).trim();
+                // בודקים אם השורה מתחילה בסוגריים מרובעים של ווטסאפ
+                if (currentLine.startsWith('[')) {
+                    // מוצאים את המיקום של סגירת הסוגריים
+                    const closeBracketIndex = currentLine.indexOf(']');
+                    
+                    if (closeBracketIndex > -1) {
+                        // מחפשים את הנקודתיים *רק אחרי* שהסוגריים נסגרו (כדי לדלג על השעה)
+                        const colonAfterNameIndex = currentLine.indexOf(':', closeBracketIndex);
+                        
+                        if (colonAfterNameIndex > -1) {
+                            // חותכים הכל עד הנקודתיים של השם (כולל) ומשאירים רק את המוצרים
+                            return currentLine.substring(colonAfterNameIndex + 1).trim();
+                        }
                     }
                 }
-                return line.trim();
+                
+                // גיבוי לפורמט ווטסאפ אנדרואיד ישן (תאריך, שעה - שם:)
+                const dashIndex = currentLine.indexOf(' - ');
+                if (dashIndex > 0 && dashIndex < 25) {
+                    const colonAfterDashIndex = currentLine.indexOf(':', dashIndex);
+                    if (colonAfterDashIndex > -1) {
+                        return currentLine.substring(colonAfterDashIndex + 1).trim();
+                    }
+                }
+                
+                return currentLine; // אם זו שורה רגילה בלי תאריכים, פשוט מחזירים אותה
             }).join('\n');
 
             const separatorRegex = /^[-=_~*]+$/;
