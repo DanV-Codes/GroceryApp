@@ -55,17 +55,27 @@
             renderShopList(); // עדכון אוטומטי של תצוגת הסופר
         });
 
-        // ==========================================
-        // 2. לוגיקת הניקוי החכמה (Parsing)
+// ==========================================
+        // 2. לוגיקת הניקוי החכמה (Parsing) - גרסה משופרת
         // ==========================================
         function parseWhatsAppList(text) {
-            // העלמת תווים נסתרים שווטסאפ מוסיף (LTR/RTL marks)
+            // העלמת תווים נסתרים שווטסאפ שותלת (LTR/RTL marks)
             let cleanText = text.replace(/[\u200E\u200F\u202A-\u202E]/g, '');
 
             // מעבר שורה-שורה וגילוח התאריך והשם לפני שמפצלים פסיקים
             const textWithoutMetadata = cleanText.split('\n').map(line => {
-                // מזהה דפוס של [תאריך, שעה] שם: ומסיר אותו
-                return line.replace(/^(?:\[[\d\s.,/:-]+\]|[\d\s.,/:-]+\s*-)\s*[^:]+:\s*/, '').trim();
+                const colonIndex = line.indexOf(':');
+                
+                // אם יש נקודתיים בשורה, נבדוק אם מה שלפניהם נראה כמו קידומת של ווטסאפ
+                if (colonIndex > -1) {
+                    const prefix = line.substring(0, colonIndex);
+                    // אם הקידומת מכילה מספרים (שעה/תאריך) וסימנים אופייניים, זו קידומת ווטסאפ
+                    if (/[\d]/.test(prefix) && (prefix.includes('[') || prefix.includes('-') || prefix.includes(','))) {
+                        // חותכים הכל ומשאירים רק את מה שאחרי הנקודתיים
+                        return line.substring(colonIndex + 1).trim();
+                    }
+                }
+                return line.trim();
             }).join('\n');
 
             const separatorRegex = /^[-=_~*]+$/;
