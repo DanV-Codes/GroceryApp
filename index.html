@@ -42,6 +42,11 @@
         const shopListTitle = document.getElementById('shopListTitle');
         const btnBackHome = document.getElementById('btnBackHome');
         const btnLockList = document.getElementById('btnLockList');
+        
+        // חיבור לאלמנטים החדשים - הוספה ידנית
+        const manualAddArea = document.getElementById('manualAddArea');
+        const manualItemInput = document.getElementById('manualItemInput');
+        const btnManualAdd = document.getElementById('btnManualAdd');
 
         // פונקציית עזר ליצירת תאריך מעוצב
         function getFormattedDate() {
@@ -63,7 +68,7 @@
         });
 
         // ==========================================
-        // 2. לוגיקת הניקוי החכמה
+        // 2. לוגיקת הניקוי החכמה (WhatsApp)
         // ==========================================
         function parseWhatsAppList(text) {
             let cleanText = text.replace(/[\u200E\u200F\u202A-\u202E]/g, '');
@@ -100,9 +105,8 @@
         // ==========================================
         function renderHomeScreen() {
             const openList = allLists.find(l => l.status === 'open');
-            const lockedLists = allLists.filter(l => l.status === 'locked').sort((a,b) => b.id - a.id); // החדש ביותר למעלה
+            const lockedLists = allLists.filter(l => l.status === 'locked').sort((a,b) => b.id - a.id);
 
-            // ניהול כפתור יצירת רשימה
             if (openList) {
                 btnCreateList.style.display = 'none';
             } else {
@@ -111,7 +115,6 @@
 
             let html = '';
 
-            // הצגת הרשימה הפעילה בראש (אם קיימת)
             if (openList) {
                 const totalItems = openList.items.length;
                 const boughtItems = openList.items.filter(i => i.isPurchased).length;
@@ -127,7 +130,6 @@
                 `;
             }
 
-            // הצגת הרשימות הנעולות
             if (lockedLists.length > 0) {
                 html += lockedLists.map(l => {
                     const total = l.items.length;
@@ -143,7 +145,6 @@
                 }).join('');
             }
 
-            // אם הכל ריק
             if (!openList && lockedLists.length === 0) {
                 html = '<div style="color:#888; text-align:center; font-size:0.9rem; margin-top:20px;">אין היסטוריית קניות. צור רשימה ראשונה!</div>';
             }
@@ -151,7 +152,6 @@
             historyListsArea.innerHTML = html;
         }
 
-        // יצירת רשימה חדשה לגמרי
         btnCreateList.addEventListener('click', async () => {
             const newList = {
                 id: Date.now(),
@@ -164,7 +164,6 @@
             showStatus("רשימה חדשה נפתחה!", "success");
         });
 
-        // הדבקה מהלוח
         pasteBtn.addEventListener('click', async () => {
             try {
                 const text = await navigator.clipboard.readText();
@@ -190,7 +189,6 @@
             `).join('');
         }
 
-        // שליחת מוצרים לרשימה האחרונה שפתוחה
         btnAddExisting.addEventListener('click', async () => {
             btnAddExisting.disabled = true;
             
@@ -223,7 +221,7 @@
         }
 
         // ==========================================
-        // 4. מסך הסופר (קריאה מהרשימה ונעילה)
+        // 4. מסך הסופר (קריאה מהרשימה, הוספה ומחיקה)
         // ==========================================
         window.openShopView = function(listId) {
             currentViewedListId = listId;
@@ -231,12 +229,13 @@
             shopScreen.classList.add('active');
             window.scrollTo(0, 0);
             
-            // מציג את כפתור הנעילה רק אם הרשימה פתוחה
             const listToRender = allLists.find(l => l.id === currentViewedListId);
             if (listToRender && listToRender.status === 'open') {
                 btnLockList.style.display = 'block';
+                manualAddArea.style.display = 'flex'; // מציג הוספה ידנית
             } else {
                 btnLockList.style.display = 'none';
+                manualAddArea.style.display = 'none'; // מסתיר הוספה ידנית
             }
 
             renderShopList();
@@ -248,7 +247,6 @@
             homeScreen.classList.add('active');
         });
 
-        // כפתור נעילת הרשימה (סיום קנייה)
         btnLockList.addEventListener('click', async () => {
             const listIndex = allLists.findIndex(l => l.id === currentViewedListId);
             if (listIndex > -1) {
@@ -257,8 +255,9 @@
                     allLists[listIndex].status = 'locked';
                     allLists[listIndex].lockedAt = getFormattedDate();
                     await setDoc(listDocRef, { lists: allLists }, { merge: true });
-                    btnLockList.style.display = 'none'; // מעלים את הכפתור כי עכשיו היא נעולה
-                    renderShopList(); // מעדכן כותרת
+                    btnLockList.style.display = 'none'; 
+                    manualAddArea.style.display = 'none'; // מעלים הוספה ידנית בנעילה
+                    renderShopList(); 
                 }
             }
         });
@@ -275,6 +274,7 @@
             }
 
             const sortedList = [...listToRender.items].sort((a, b) => a.isPurchased - b.isPurchased);
+            const isOpen = listToRender.status === 'open';
 
             shopListArea.innerHTML = sortedList.map(item => `
                 <div class="shop-item ${item.isPurchased ? 'purchased' : ''}" onclick="toggleItem('${item.id}')">
@@ -282,6 +282,7 @@
                         ${item.isPurchased ? '✔️' : ''}
                     </div>
                     <span>${item.name}</span>
+                    ${isOpen ? `<button class="delete-btn" onclick="deleteItem('${item.id}', event)">🗑️</button>` : ''}
                 </div>
             `).join('');
         }
@@ -297,6 +298,37 @@
                 }
             }
         }
+
+        // מחיקת מוצר ספציפי
+        window.deleteItem = async function(itemId, event) {
+            event.stopPropagation(); // מונע סימון מוצר בעת מחיקה
+            
+            const listIndex = allLists.findIndex(l => l.id === currentViewedListId);
+            if (listIndex > -1) {
+                allLists[listIndex].items = allLists[listIndex].items.filter(i => i.id !== itemId);
+                await setDoc(listDocRef, { lists: allLists }, { merge: true });
+            }
+        }
+
+        // הוספת מוצר ידנית
+        btnManualAdd.addEventListener('click', async () => {
+            const itemName = manualItemInput.value.trim();
+            if (!itemName) return; 
+
+            const listIndex = allLists.findIndex(l => l.id === currentViewedListId);
+            if (listIndex > -1 && allLists[listIndex].status === 'open') {
+                const newItem = {
+                    id: Date.now() + Math.random().toString(16).slice(2),
+                    name: itemName,
+                    isPurchased: false
+                };
+                allLists[listIndex].items.push(newItem);
+                await setDoc(listDocRef, { lists: allLists }, { merge: true });
+                
+                manualItemInput.value = ""; 
+                manualItemInput.focus(); 
+            }
+        });
 
     </script>
 
@@ -326,7 +358,7 @@
 
         .section-title { font-size: 1.2rem; color: #333; margin: 30px 0 15px 0; border-bottom: 2px solid #25D366; display: inline-block; padding-bottom: 5px;}
         
-        /* רשימות קודמות (היסטוריה + פעילה) */
+        /* רשימות קודמות */
         .history-card { 
             background: #fff; border: 1px solid #e0e0e0; padding: 15px; 
             border-radius: 10px; margin-bottom: 10px; display: flex; 
@@ -340,7 +372,7 @@
         .history-stats { font-size: 0.85rem; color: #888;}
         .card-action { font-size: 1.2rem; }
 
-        /* העיצוב המיוחד של הרשימה הפעילה בראש העמוד */
+        /* רשימה פעילה */
         .active-list-card {
             border: 2px solid #25D366;
             background: #f0fdf4;
@@ -348,7 +380,7 @@
         .active-list-card .history-title { color: #075E54; font-size: 1.1rem;}
         .active-list-card .history-stats { color: #054a42; font-weight: bold;}
 
-        /* עיצוב המוצרים במסך הסופר */
+        /* מוצרים בסופר */
         .shop-item { 
             display: flex; align-items: center; padding: 16px; 
             background: white; margin-bottom: 10px; border-radius: 12px; 
@@ -367,6 +399,24 @@
         .top-bar-shop { display: flex; align-items: center; margin-bottom: 20px; gap:15px; border-bottom: 1px solid #eee; padding-bottom: 15px;}
         .top-bar-shop button { width: auto; margin:0; }
         .top-bar-shop h2 { margin:0; font-size: 1.2rem; color:#333;}
+
+        /* תוספות הוספה ידנית ומחיקה */
+        .manual-add-area {
+            display: flex; gap: 10px; margin-bottom: 20px;
+        }
+        #manualItemInput {
+            flex: 1; padding: 12px; border: 1px solid #ccc; border-radius: 8px; font-size: 1rem;
+        }
+        .btn-add-manual {
+            width: auto; margin: 0; background: #007bff; color: white; padding: 0 20px;
+        }
+
+        .delete-btn {
+            background: none; border: none; font-size: 1.2rem; padding: 5px; cursor: pointer; 
+            margin-right: auto; 
+            box-shadow: none; margin-bottom: 0; width: auto;
+        }
+        .delete-btn:active { transform: scale(0.8); }
     </style>
 </head>
 <body>
@@ -394,8 +444,13 @@
             
             <button id="btnLockList" class="btn-lock">🔒 סיום קנייה ונעילה</button>
 
+            <div id="manualAddArea" class="manual-add-area" style="display: none;">
+                <input type="text" id="manualItemInput" placeholder="הכנס שם מוצר...">
+                <button id="btnManualAdd" class="btn-add-manual">➕ הוסף</button>
+            </div>
+
             <div id="shopListArea">
-                </div>
+            </div>
         </div>
 
     </div>
