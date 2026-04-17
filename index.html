@@ -43,7 +43,6 @@
         const btnBackHome = document.getElementById('btnBackHome');
         const btnLockList = document.getElementById('btnLockList');
         
-        // חיבור לאלמנטים החדשים - הוספה ידנית
         const manualAddArea = document.getElementById('manualAddArea');
         const manualItemInput = document.getElementById('manualItemInput');
         const btnManualAdd = document.getElementById('btnManualAdd');
@@ -107,14 +106,12 @@
             const openList = allLists.find(l => l.status === 'open');
             const lockedLists = allLists.filter(l => l.status === 'locked').sort((a,b) => b.id - a.id);
 
-            if (openList) {
-                btnCreateList.style.display = 'none';
-            } else {
-                btnCreateList.style.display = 'block';
-            }
+            // כפתור "צור רשימה" יופיע רק אם אין רשימה פתוחה
+            btnCreateList.style.display = openList ? 'none' : 'block';
 
             let html = '';
 
+            // רשימה פעילה
             if (openList) {
                 const totalItems = openList.items.length;
                 const boughtItems = openList.items.filter(i => i.isPurchased).length;
@@ -122,14 +119,18 @@
                 html += `
                     <div class="history-card active-list-card" onclick="openShopView(${openList.id})">
                         <div class="card-info">
-                            <div class="history-title">🟢 רשימה פעילה (לעריכה)</div>
-                            <div class="history-stats">סה"כ: ${totalItems} מוצרים | בעגלה: ${boughtItems}</div>
+                            <div class="history-title">🟢 רשימה פעילה</div>
+                            <div class="history-stats">סה"כ: ${totalItems} | בעגלה: ${boughtItems}</div>
                         </div>
-                        <div class="card-action">🛒</div>
+                        <div class="card-actions-row">
+                            <button class="delete-entire-list-btn" onclick="deleteEntireList(${openList.id}, event)">🗑️</button>
+                            <div class="card-arrow">🛒</div>
+                        </div>
                     </div>
                 `;
             }
 
+            // רשימות נעולות
             if (lockedLists.length > 0) {
                 html += lockedLists.map(l => {
                     const total = l.items.length;
@@ -138,18 +139,30 @@
                     <div class="history-card" onclick="openShopView(${l.id})">
                         <div class="card-info">
                             <div class="history-title">🔒 רשימה מ-${l.lockedAt}</div>
-                            <div class="history-stats">נקנו ${bought} מתוך ${total} מוצרים</div>
+                            <div class="history-stats">נקנו ${bought} מתוך ${total}</div>
                         </div>
+                        <button class="delete-entire-list-btn" onclick="deleteEntireList(${l.id}, event)">🗑️</button>
                     </div>
                     `;
                 }).join('');
             }
 
             if (!openList && lockedLists.length === 0) {
-                html = '<div style="color:#888; text-align:center; font-size:0.9rem; margin-top:20px;">אין היסטוריית קניות. צור רשימה ראשונה!</div>';
+                html = '<div class="empty-state">אין היסטוריית קניות.</div>';
             }
 
             historyListsArea.innerHTML = html;
+        }
+
+        // מחיקת רשימה שלמה
+        window.deleteEntireList = async function(listId, event) {
+            event.stopPropagation(); // מונע פתיחת הרשימה
+            const confirmDelete = confirm("האם אתה בטוח שברצונך למחוק את כל הרשימה הזו? פעולה זו אינה ניתנת לביטול.");
+            if (confirmDelete) {
+                allLists = allLists.filter(l => l.id !== listId);
+                await setDoc(listDocRef, { lists: allLists }, { merge: true });
+                showStatus("הרשימה נמחקה בהצלחה", "success");
+            }
         }
 
         btnCreateList.addEventListener('click', async () => {
@@ -170,16 +183,16 @@
                 const cleanedList = parseWhatsAppList(text);
                 
                 if (cleanedList.length === 0) {
-                    showStatus("❌ הלוח ריק או שלא זוהו מוצרים.", "error");
+                    showStatus("❌ הלוח ריק או לא זוהה טקסט", "error");
                     return;
                 }
 
                 pastedItems = cleanedList;
                 renderPreview();
                 btnAddExisting.style.display = 'block';
-                showStatus(`✅ זוהו ${cleanedList.length} מוצרים.`, "success");
+                showStatus(`✅ זוהו ${cleanedList.length} מוצרים`, "success");
             } catch (err) {
-                showStatus("❌ שגיאה בגישה ללוח.", "error");
+                showStatus("❌ שגיאה בגישה ללוח", "error");
             }
         });
 
@@ -191,7 +204,6 @@
 
         btnAddExisting.addEventListener('click', async () => {
             btnAddExisting.disabled = true;
-            
             let openList = allLists.find(l => l.status === 'open');
             if (!openList) {
                 openList = { id: Date.now(), status: 'open', lockedAt: null, items: [] };
@@ -205,23 +217,23 @@
             }));
 
             openList.items = openList.items.concat(newItems);
-            
             await setDoc(listDocRef, { lists: allLists }, { merge: true });
+            
             pastedItems = [];
             previewArea.innerHTML = "";
             btnAddExisting.style.display = 'none';
-            showStatus("המוצרים התווספו לרשימה הפעילה! 🛒", "success");
+            showStatus("המוצרים התווספו! 🛒", "success");
             btnAddExisting.disabled = false;
         });
 
         function showStatus(msg, type) {
             statusArea.textContent = msg;
             statusArea.style.color = type === 'error' ? '#dc3545' : '#198754';
-            setTimeout(() => { statusArea.textContent = ""; }, 4000);
+            setTimeout(() => { statusArea.textContent = ""; }, 3000);
         }
 
         // ==========================================
-        // 4. מסך הסופר (קריאה מהרשימה, הוספה ומחיקה)
+        // 4. מסך הסופר (קריאה, הוספה ומחיקה)
         // ==========================================
         window.openShopView = function(listId) {
             currentViewedListId = listId;
@@ -230,13 +242,10 @@
             window.scrollTo(0, 0);
             
             const listToRender = allLists.find(l => l.id === currentViewedListId);
-            if (listToRender && listToRender.status === 'open') {
-                btnLockList.style.display = 'block';
-                manualAddArea.style.display = 'flex'; // מציג הוספה ידנית
-            } else {
-                btnLockList.style.display = 'none';
-                manualAddArea.style.display = 'none'; // מסתיר הוספה ידנית
-            }
+            const isOpen = listToRender && listToRender.status === 'open';
+            
+            btnLockList.style.display = isOpen ? 'block' : 'none';
+            manualAddArea.style.display = isOpen ? 'flex' : 'none';
 
             renderShopList();
         }
@@ -250,14 +259,11 @@
         btnLockList.addEventListener('click', async () => {
             const listIndex = allLists.findIndex(l => l.id === currentViewedListId);
             if (listIndex > -1) {
-                const confirmLock = confirm("סיימת את הקניות? פעולה זו תנעל את הרשימה ותאפשר פתיחת רשימה חדשה לבאה בתור.");
-                if (confirmLock) {
+                if (confirm("לנעול את הרשימה ולסיים קנייה?")) {
                     allLists[listIndex].status = 'locked';
                     allLists[listIndex].lockedAt = getFormattedDate();
                     await setDoc(listDocRef, { lists: allLists }, { merge: true });
-                    btnLockList.style.display = 'none'; 
-                    manualAddArea.style.display = 'none'; // מעלים הוספה ידנית בנעילה
-                    renderShopList(); 
+                    openShopView(currentViewedListId); // רענון תצוגה
                 }
             }
         });
@@ -269,7 +275,7 @@
             shopListTitle.textContent = listToRender.lockedAt ? `עגלה מ-${listToRender.lockedAt}` : "עגלה פעילה";
 
             if (listToRender.items.length === 0) {
-                shopListArea.innerHTML = `<div style="text-align:center; padding: 20px; color: #777;">הרשימה ריקה.</div>`;
+                shopListArea.innerHTML = `<div class="empty-state">הרשימה ריקה.</div>`;
                 return;
             }
 
@@ -278,16 +284,13 @@
 
             shopListArea.innerHTML = sortedList.map(item => `
                 <div class="shop-item ${item.isPurchased ? 'purchased' : ''}" onclick="toggleItem('${item.id}')">
-                    <div class="checkbox-circle">
-                        ${item.isPurchased ? '✔️' : ''}
-                    </div>
+                    <div class="checkbox-circle">${item.isPurchased ? '✔️' : ''}</div>
                     <span>${item.name}</span>
-                    ${isOpen ? `<button class="delete-btn" onclick="deleteItem('${item.id}', event)">🗑️</button>` : ''}
+                    ${isOpen ? `<button class="delete-item-btn" onclick="deleteItem('${item.id}', event)">🗑️</button>` : ''}
                 </div>
             `).join('');
         }
 
-        // סימון מוצר (V)
         window.toggleItem = async function(itemId) {
             const listIndex = allLists.findIndex(l => l.id === currentViewedListId);
             if (listIndex > -1) {
@@ -299,10 +302,8 @@
             }
         }
 
-        // מחיקת מוצר ספציפי
         window.deleteItem = async function(itemId, event) {
-            event.stopPropagation(); // מונע סימון מוצר בעת מחיקה
-            
+            event.stopPropagation();
             const listIndex = allLists.findIndex(l => l.id === currentViewedListId);
             if (listIndex > -1) {
                 allLists[listIndex].items = allLists[listIndex].items.filter(i => i.id !== itemId);
@@ -310,21 +311,17 @@
             }
         }
 
-        // הוספת מוצר ידנית
         btnManualAdd.addEventListener('click', async () => {
             const itemName = manualItemInput.value.trim();
             if (!itemName) return; 
-
             const listIndex = allLists.findIndex(l => l.id === currentViewedListId);
             if (listIndex > -1 && allLists[listIndex].status === 'open') {
-                const newItem = {
+                allLists[listIndex].items.push({
                     id: Date.now() + Math.random().toString(16).slice(2),
                     name: itemName,
                     isPurchased: false
-                };
-                allLists[listIndex].items.push(newItem);
+                });
                 await setDoc(listDocRef, { lists: allLists }, { merge: true });
-                
                 manualItemInput.value = ""; 
                 manualItemInput.focus(); 
             }
@@ -335,7 +332,7 @@
     <style>
         * { box-sizing: border-box; font-family: system-ui, -apple-system, sans-serif; }
         body { background: #f0f2f5; margin: 0; padding: 0; display: flex; justify-content: center; }
-        .app-container { width: 100%; max-width: 450px; background: white; min-height: 100vh; position: relative; }
+        .app-container { width: 100%; max-width: 450px; background: white; min-height: 100vh; position: relative; box-shadow: 0 0 20px rgba(0,0,0,0.1); }
         
         .screen { display: none; padding: 20px; padding-bottom: 80px; }
         .screen.active { display: block; animation: fadeIn 0.3s ease; }
@@ -343,114 +340,104 @@
 
         h1 { color: #075E54; text-align: center; font-size: 1.5rem; margin-bottom: 25px; border-bottom: 2px solid #eee; padding-bottom: 10px;}
         
-        button { width: 100%; padding: 16px; border: none; border-radius: 12px; font-weight: bold; font-size: 1.1rem; cursor: pointer; transition: 0.2s; margin-bottom: 15px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }
+        button { width: 100%; padding: 16px; border: none; border-radius: 12px; font-weight: bold; font-size: 1.1rem; cursor: pointer; transition: 0.2s; margin-bottom: 15px; }
         button:active { transform: scale(0.98); }
         
-        .btn-paste { background: #25D366; color: white; }
+        .btn-paste { background: #25D366; color: white; box-shadow: 0 4px 10px rgba(37, 211, 102, 0.3); }
         .btn-add { background: #007bff; color: white; display: none; }
-        .btn-create { background: #6c757d; color: white; margin-top: 10px; display:none;}
-        .btn-back { background: #f8f9fa; color: #333; border: 1px solid #ddd; padding: 12px; border-radius: 50px;}
-        .btn-lock { background: #ffc107; color: #333; border: 2px solid #e0a800; display: none;}
+        .btn-create { background: #6c757d; color: white; }
+        .btn-back { background: #eee; color: #333; padding: 10px 20px; width: auto; border-radius: 50px; font-size: 0.9rem; margin: 0;}
+        .btn-lock { background: #ffc107; color: #333; border: 2px solid #e0a800; }
 
-        #previewArea { max-height: 200px; overflow-y: auto; background: #fafafa; border-radius: 8px; margin-bottom: 15px; }
-        .preview-item { padding: 10px; border-bottom: 1px solid #eee; color: #444; }
-        #statusArea { text-align: center; font-weight: bold; min-height: 20px; margin-bottom: 10px;}
+        #previewArea { max-height: 150px; overflow-y: auto; background: #f9f9f9; border-radius: 8px; margin-bottom: 15px; border: 1px dashed #ccc; }
+        .preview-item { padding: 8px 12px; border-bottom: 1px solid #eee; font-size: 0.9rem; color: #555; }
+        #statusArea { text-align: center; font-weight: bold; min-height: 24px; margin-bottom: 10px; font-size: 0.9rem;}
 
-        .section-title { font-size: 1.2rem; color: #333; margin: 30px 0 15px 0; border-bottom: 2px solid #25D366; display: inline-block; padding-bottom: 5px;}
+        .section-title { font-size: 1.1rem; font-weight: bold; color: #333; margin: 25px 0 15px 0; display: block; }
         
-        /* רשימות קודמות */
+        /* רשימות בדף הבית */
         .history-card { 
             background: #fff; border: 1px solid #e0e0e0; padding: 15px; 
-            border-radius: 10px; margin-bottom: 10px; display: flex; 
+            border-radius: 12px; margin-bottom: 12px; display: flex; 
             justify-content: space-between; align-items: center; 
-            box-shadow: 0 2px 4px rgba(0,0,0,0.02); cursor: pointer;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.05); cursor: pointer;
         }
-        .history-card:active { background: #f8f9fa; transform: scale(0.98);}
+        .active-list-card { border: 2px solid #25D366; background: #f0fdf4; }
+        .card-info { flex: 1; }
+        .history-title { font-weight: bold; color: #333; margin-bottom: 4px; }
+        .history-stats { font-size: 0.85rem; color: #777; }
         
-        .card-info { display: flex; flex-direction: column; gap: 4px;}
-        .history-title { font-weight: bold; color: #555; }
-        .history-stats { font-size: 0.85rem; color: #888;}
-        .card-action { font-size: 1.2rem; }
+        .card-actions-row { display: flex; align-items: center; gap: 15px; }
+        .card-arrow { font-size: 1.2rem; }
 
-        /* רשימה פעילה */
-        .active-list-card {
-            border: 2px solid #25D366;
-            background: #f0fdf4;
+        /* כפתורי מחיקה */
+        .delete-entire-list-btn { 
+            width: auto; background: none; color: #ff4d4d; padding: 10px; 
+            margin: 0; font-size: 1.3rem; box-shadow: none;
         }
-        .active-list-card .history-title { color: #075E54; font-size: 1.1rem;}
-        .active-list-card .history-stats { color: #054a42; font-weight: bold;}
+        .delete-item-btn { 
+            width: auto; background: none; color: #ccc; padding: 5px; 
+            margin: 0 0 0 auto; font-size: 1.1rem; box-shadow: none;
+        }
+        .delete-item-btn:hover { color: #ff4d4d; }
 
-        /* מוצרים בסופר */
+        /* מסך סופר */
+        .top-bar-shop { display: flex; align-items: center; gap: 15px; margin-bottom: 20px; }
+        .top-bar-shop h2 { margin: 0; font-size: 1.2rem; flex: 1; text-align: center; }
+
+        .manual-add-area { display: flex; gap: 10px; margin-bottom: 20px; }
+        #manualItemInput { flex: 1; padding: 12px; border: 1px solid #ccc; border-radius: 10px; font-size: 1rem; }
+        .btn-add-manual { width: auto; margin: 0; background: #007bff; color: white; padding: 0 20px; }
+
         .shop-item { 
-            display: flex; align-items: center; padding: 16px; 
-            background: white; margin-bottom: 10px; border-radius: 12px; 
-            box-shadow: 0 2px 8px rgba(0,0,0,0.06); border: 1px solid #eee;
-            cursor: pointer; transition: all 0.2s ease;
+            display: flex; align-items: center; padding: 15px; background: white; 
+            margin-bottom: 10px; border-radius: 12px; border: 1px solid #eee;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.03); cursor: pointer;
         }
+        .shop-item.purchased { background: #f9f9f9; border-color: transparent; opacity: 0.7; }
+        .shop-item.purchased span { text-decoration: line-through; color: #888; }
+        
         .checkbox-circle {
-            width: 26px; height: 26px; border-radius: 50%; border: 2px solid #ccc;
+            width: 24px; height: 24px; border-radius: 50%; border: 2px solid #ddd;
             margin-left: 15px; display: flex; align-items: center; justify-content: center;
-            font-size: 14px; transition: 0.2s;
+            font-size: 12px; flex-shrink: 0;
         }
-        .shop-item.purchased { background: #f8f9fa; border-color: transparent; box-shadow: none; }
-        .shop-item.purchased span { text-decoration: line-through; color: #adb5bd; }
-        .shop-item.purchased .checkbox-circle { background: #25D366; border-color: #25D366; color: white; }
+        .purchased .checkbox-circle { background: #25D366; border-color: #25D366; color: white; }
 
-        .top-bar-shop { display: flex; align-items: center; margin-bottom: 20px; gap:15px; border-bottom: 1px solid #eee; padding-bottom: 15px;}
-        .top-bar-shop button { width: auto; margin:0; }
-        .top-bar-shop h2 { margin:0; font-size: 1.2rem; color:#333;}
-
-        /* תוספות הוספה ידנית ומחיקה */
-        .manual-add-area {
-            display: flex; gap: 10px; margin-bottom: 20px;
-        }
-        #manualItemInput {
-            flex: 1; padding: 12px; border: 1px solid #ccc; border-radius: 8px; font-size: 1rem;
-        }
-        .btn-add-manual {
-            width: auto; margin: 0; background: #007bff; color: white; padding: 0 20px;
-        }
-
-        .delete-btn {
-            background: none; border: none; font-size: 1.2rem; padding: 5px; cursor: pointer; 
-            margin-right: auto; 
-            box-shadow: none; margin-bottom: 0; width: auto;
-        }
-        .delete-btn:active { transform: scale(0.8); }
+        .empty-state { text-align: center; padding: 40px; color: #aaa; font-style: italic; }
     </style>
 </head>
 <body>
     <div class="app-container">
         
         <div id="home-screen" class="screen active">
-            <h1>🛒 לוח בקרה</h1>
+            <h1>🛒 רשימת קניות</h1>
 
-            <button id="pasteBtn" class="btn-paste">📋 הדבק ונקה מהלוח</button>
+            <button id="pasteBtn" class="btn-paste">📋 הדבק מווטסאפ</button>
             <div id="statusArea"></div>
             <div id="previewArea"></div>
-            <button id="btnAddExisting" class="btn-add">📥 העבר לרשימה הפעילה</button>
+            <button id="btnAddExisting" class="btn-add">📥 הוסף לרשימה הפעילה</button>
             
-            <button id="btnCreateList" class="btn-create">➕ צור רשימה חדשה</button>
+            <button id="btnCreateList" class="btn-create">➕ פתח רשימה חדשה</button>
 
-            <div class="section-title">כל הרשימות שלנו</div>
+            <span class="section-title">היסטוריית רשימות</span>
             <div id="historyListsArea"></div>
         </div>
 
         <div id="shop-screen" class="screen">
             <div class="top-bar-shop">
-                <button id="btnBackHome" class="btn-back">🔙 חזור</button>
+                <button id="btnBackHome" class="btn-back">חזור</button>
                 <h2 id="shopListTitle">עגלת קניות</h2>
             </div>
             
             <button id="btnLockList" class="btn-lock">🔒 סיום קנייה ונעילה</button>
 
-            <div id="manualAddArea" class="manual-add-area" style="display: none;">
-                <input type="text" id="manualItemInput" placeholder="הכנס שם מוצר...">
-                <button id="btnManualAdd" class="btn-add-manual">➕ הוסף</button>
+            <div id="manualAddArea" class="manual-add-area">
+                <input type="text" id="manualItemInput" placeholder="מוצר חדש...">
+                <button id="btnManualAdd" class="btn-add-manual">הוסף</button>
             </div>
 
-            <div id="shopListArea">
-            </div>
+            <div id="shopListArea"></div>
         </div>
 
     </div>
