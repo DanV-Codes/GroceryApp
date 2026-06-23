@@ -4,34 +4,54 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>רשימת קניות משפחתית</title>
-    
+
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
-        import { getFirestore, doc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+        import { getFirestore, doc, setDoc, getDoc, deleteDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
 
         // הגדרות ה-Firebase שלך
+        // הערה: ה-apiKey אינו סוד באפליקציית web. האבטחה נאכפת ע"י Authentication + Firestore Rules.
         const firebaseConfig = {
-            apiKey: "AIzaSyAF7sTU_FsEI5TwQ5oXHRbuub6Bhu8yMzk",
-            authDomain: "groceryshoplist-5d684.firebaseapp.com",
-            projectId: "groceryshoplist-5d684",
-            storageBucket: "groceryshoplist-5d684.firebasestorage.app",
-            messagingSenderId: "400360296657",
-            appId: "1:400360296657:web:9273e31824531ea57735f0"
+            apiKey: "AIzaSyDhLZnQ89bZIvN--MGaKaLbMWshk-Rw9Ck",
+            authDomain: "groceryapp-2-b1453.firebaseapp.com",
+            projectId: "groceryapp-2-b1453",
+            storageBucket: "groceryapp-2-b1453.firebasestorage.app",
+            messagingSenderId: "408692538577",
+            appId: "1:408692538577:web:a1f2b6e6bb8757723519f0"
         };
 
         const app = initializeApp(firebaseConfig);
         const db = getFirestore(app);
+        const auth = getAuth(app);
 
-        const listDocRef = doc(db, "shopping_lists", "family_lists_manager");
-
+        // ==========================================
+        // 0. מצב האפליקציה והמשפחה
+        // ==========================================
         let pastedItems = [];
         let allLists = [];
         let currentViewedListId = null;
 
+        let currentUser = null;       // משתמש אנונימי (Firebase Auth)
+        let familyCode = null;        // הסוד המשותף ששולט בגישה
+        let familyDocRef = null;      // מצביע למסמך המשפחה הנוכחי
+        let unsubscribeSnapshot = null;
+        let pendingEcho = false;      // A3: דגל לדילוג על רינדור-הד של כתיבה מקומית
+
         // חיבור לאלמנטים
+        const authScreen = document.getElementById('auth-screen');
         const homeScreen = document.getElementById('home-screen');
         const shopScreen = document.getElementById('shop-screen');
-        
+
+        // אלמנטים של מסך ההתחברות/משפחה
+        const btnCreateFamily = document.getElementById('btnCreateFamily');
+        const familyCodeInput = document.getElementById('familyCodeInput');
+        const btnJoinFamily = document.getElementById('btnJoinFamily');
+        const authStatus = document.getElementById('authStatus');
+        const familyCodeLabel = document.getElementById('familyCodeLabel');
+        const btnCopyCode = document.getElementById('btnCopyCode');
+        const btnLeaveFamily = document.getElementById('btnLeaveFamily');
+
         const pasteBtn = document.getElementById('pasteBtn');
         const previewArea = document.getElementById('previewArea');
         const btnAddExisting = document.getElementById('btnAddExisting');
@@ -42,7 +62,7 @@
         const shopListTitle = document.getElementById('shopListTitle');
         const btnBackHome = document.getElementById('btnBackHome');
         const btnLockList = document.getElementById('btnLockList');
-        
+
         const manualAddArea = document.getElementById('manualAddArea');
         const manualItemInput = document.getElementById('manualItemInput');
         const btnManualAdd = document.getElementById('btnManualAdd');
@@ -53,18 +73,127 @@
             return `${d.getDate().toString().padStart(2, '0')}/${(d.getMonth()+1).toString().padStart(2, '0')}/${d.getFullYear()} ${d.getHours().toString().padStart(2,'0')}:${d.getMinutes().toString().padStart(2,'0')}`;
         }
 
+        // B1: בריחה מתווי HTML למניעת שבירת רינדור / XSS בתוכן שהוזן ע"י המשתמש
+        function escapeHtml(str) {
+            return String(str)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
         // ==========================================
-        // 1. האזנה בזמן אמת ל-Firebase
+        // 1. אימות (אנונימי) + שליטת גישה לפי קוד משפחה
         // ==========================================
-        onSnapshot(listDocRef, (docSnap) => {
-            if (docSnap.exists()) {
-                allLists = docSnap.data().lists || [];
-            } else {
-                allLists = [];
+
+        // יצירת קוד משפחה אקראי וקשה לניחוש (64 ביט = 16 תווים הקס)
+        function generateFamilyCode() {
+            const bytes = new Uint8Array(8);
+            crypto.getRandomValues(bytes);
+            return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+        }
+
+        function showAuthStatus(msg, type) {
+            authStatus.textContent = msg;
+            authStatus.style.color = type === 'error' ? '#dc3545' : '#198754';
+        }
+
+        function showAuthScreen() {
+            authScreen.classList.add('active');
+            homeScreen.classList.remove('active');
+            shopScreen.classList.remove('active');
+        }
+
+        // הצטרפות/יצירה: רושמים חברות (members/{uid}) ואז ניגשים למסמך המשפחה
+        async function joinFamily(code, mode) {
+            code = (code || '').trim().toLowerCase();
+            if (!code) { showAuthStatus("יש להזין קוד משפחה", "error"); return; }
+            if (!currentUser) { showAuthStatus("מתחבר לשרת... נסה שוב בעוד רגע", "error"); return; }
+
+            const memberRef = doc(db, "families", code, "members", currentUser.uid);
+            const famRef = doc(db, "families", code);
+
+            try {
+                showAuthStatus("מתחבר...", "success");
+                // רישום חברות — מותר רק עבור ה-uid של עצמך (ראה firestore.rules)
+                await setDoc(memberRef, { joinedAt: Date.now() }, { merge: true });
+
+                if (mode === 'create') {
+                    await setDoc(famRef, { lists: [] }, { merge: true });
+                } else {
+                    const snap = await getDoc(famRef);
+                    if (!snap.exists()) {
+                        // קוד שגוי / משפחה לא קיימת — מבטלים את החברות שיצרנו
+                        await deleteDoc(memberRef);
+                        showAuthStatus("❌ קוד משפחה לא נמצא", "error");
+                        return;
+                    }
+                }
+
+                familyCode = code;
+                familyDocRef = famRef;
+                localStorage.setItem('familyCode', code);
+                enterApp(mode === 'create');
+            } catch (err) {
+                showAuthStatus("❌ שגיאה: " + (err.code || err.message), "error");
             }
-            renderHomeScreen();
-            if (currentViewedListId) renderShopList(); 
+        }
+
+        function enterApp(isNewFamily) {
+            authScreen.classList.remove('active');
+            homeScreen.classList.add('active');
+            familyCodeLabel.textContent = familyCode;
+
+            if (unsubscribeSnapshot) unsubscribeSnapshot();
+            unsubscribeSnapshot = onSnapshot(familyDocRef, (docSnap) => {
+                allLists = docSnap.exists() ? (docSnap.data().lists || []) : [];
+                // A3: התעלם מההד המקומי של כתיבה אופטימית — ה-DOM כבר עודכן מקומית.
+                if (docSnap.metadata.hasPendingWrites) return;
+                // A3: התעלם מאישור השרת לכתיבה שלנו (כבר רונדרה אופטימית).
+                if (pendingEcho) { pendingEcho = false; return; }
+                // שינוי מרחוק (ממכשיר אחר) → רענון המסך הפעיל בלבד.
+                renderActiveScreen();
+            }, () => {
+                showStatus("❌ אין הרשאת גישה לרשימה", "error");
+            });
+
+            if (isNewFamily) {
+                showStatus("שתף את קוד המשפחה כדי לצרף בני משפחה 👨‍👩‍👧‍👦", "success");
+            }
+        }
+
+        btnCreateFamily.addEventListener('click', () => joinFamily(generateFamilyCode(), 'create'));
+        btnJoinFamily.addEventListener('click', () => joinFamily(familyCodeInput.value, 'join'));
+        familyCodeInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') joinFamily(familyCodeInput.value, 'join'); });
+
+        btnCopyCode.addEventListener('click', async () => {
+            try { await navigator.clipboard.writeText(familyCode); showStatus("הקוד הועתק 📋", "success"); }
+            catch (e) { showStatus("העתקה נכשלה", "error"); }
         });
+
+        btnLeaveFamily.addEventListener('click', async () => {
+            if (!confirm("לצאת מהמשפחה במכשיר זה? תצטרך את הקוד כדי לחזור.")) return;
+            if (unsubscribeSnapshot) { unsubscribeSnapshot(); unsubscribeSnapshot = null; }
+            try {
+                if (familyCode && currentUser) {
+                    await deleteDoc(doc(db, "families", familyCode, "members", currentUser.uid));
+                }
+            } catch (e) { /* לא קריטי */ }
+            localStorage.removeItem('familyCode');
+            familyCode = null; familyDocRef = null; allLists = []; currentViewedListId = null;
+            showAuthScreen();
+        });
+
+        // אתחול: התחברות אנונימית, ואז ניסיון חזרה אוטומטי עם קוד שמור
+        onAuthStateChanged(auth, (user) => {
+            currentUser = user;
+            if (!user) return;
+            const saved = localStorage.getItem('familyCode');
+            if (saved) joinFamily(saved, 'join');
+            else showAuthScreen();
+        });
+        signInAnonymously(auth).catch(err => showAuthStatus("❌ התחברות נכשלה: " + err.code, "error"));
 
         // ==========================================
         // 2. לוגיקת הניקוי החכמה (WhatsApp)
@@ -102,6 +231,12 @@
         // ==========================================
         // 3. רינדור מסך הבית וניהול היסטוריה
         // ==========================================
+        // A3: רינדור רק של המסך הגלוי כרגע
+        function renderActiveScreen() {
+            if (shopScreen.classList.contains('active')) renderShopList();
+            else if (homeScreen.classList.contains('active')) renderHomeScreen();
+        }
+
         function renderHomeScreen() {
             const openList = allLists.find(l => l.status === 'open');
             const lockedLists = allLists.filter(l => l.status === 'locked').sort((a,b) => b.id - a.id);
@@ -115,7 +250,7 @@
             if (openList) {
                 const totalItems = openList.items.length;
                 const boughtItems = openList.items.filter(i => i.isPurchased).length;
-                
+
                 html += `
                     <div class="history-card active-list-card" onclick="openShopView(${openList.id})">
                         <div class="card-info">
@@ -138,7 +273,7 @@
                     return `
                     <div class="history-card" onclick="openShopView(${l.id})">
                         <div class="card-info">
-                            <div class="history-title">🔒 רשימה מ-${l.lockedAt}</div>
+                            <div class="history-title">🔒 רשימה מ-${escapeHtml(l.lockedAt)}</div>
                             <div class="history-stats">נקנו ${bought} מתוך ${total}</div>
                         </div>
                         <button class="delete-entire-list-btn" onclick="deleteEntireList(${l.id}, event)">🗑️</button>
@@ -160,7 +295,10 @@
             const confirmDelete = confirm("האם אתה בטוח שברצונך למחוק את כל הרשימה הזו? פעולה זו אינה ניתנת לביטול.");
             if (confirmDelete) {
                 allLists = allLists.filter(l => l.id !== listId);
-                await setDoc(listDocRef, { lists: allLists }, { merge: true });
+                renderHomeScreen(); // A2/A3: עדכון אופטימי מיידי
+                pendingEcho = true;
+                try { await setDoc(familyDocRef, { lists: allLists }, { merge: true }); }
+                catch (e) { pendingEcho = false; renderHomeScreen(); }
                 showStatus("הרשימה נמחקה בהצלחה", "success");
             }
         }
@@ -173,7 +311,10 @@
                 items: []
             };
             allLists.push(newList);
-            await setDoc(listDocRef, { lists: allLists }, { merge: true });
+            renderHomeScreen(); // A2/A3: עדכון אופטימי מיידי
+            pendingEcho = true;
+            try { await setDoc(familyDocRef, { lists: allLists }, { merge: true }); }
+            catch (e) { pendingEcho = false; renderHomeScreen(); }
             showStatus("רשימה חדשה נפתחה!", "success");
         });
 
@@ -181,7 +322,7 @@
             try {
                 const text = await navigator.clipboard.readText();
                 const cleanedList = parseWhatsAppList(text);
-                
+
                 if (cleanedList.length === 0) {
                     showStatus("❌ הלוח ריק או לא זוהה טקסט", "error");
                     return;
@@ -198,7 +339,7 @@
 
         function renderPreview() {
             previewArea.innerHTML = pastedItems.map(item => `
-                <div class="preview-item">🔸 ${item}</div>
+                <div class="preview-item">🔸 ${escapeHtml(item)}</div>
             `).join('');
         }
 
@@ -217,8 +358,11 @@
             }));
 
             openList.items = openList.items.concat(newItems);
-            await setDoc(listDocRef, { lists: allLists }, { merge: true });
-            
+            renderHomeScreen(); // A2/A3: עדכון אופטימי (מונה הפריטים)
+            pendingEcho = true;
+            try { await setDoc(familyDocRef, { lists: allLists }, { merge: true }); }
+            catch (e) { pendingEcho = false; renderHomeScreen(); }
+
             pastedItems = [];
             previewArea.innerHTML = "";
             btnAddExisting.style.display = 'none';
@@ -240,35 +384,51 @@
             homeScreen.classList.remove('active');
             shopScreen.classList.add('active');
             window.scrollTo(0, 0);
-            
+
             const listToRender = allLists.find(l => l.id === currentViewedListId);
             const isOpen = listToRender && listToRender.status === 'open';
-            
+
             btnLockList.style.display = isOpen ? 'block' : 'none';
             manualAddArea.style.display = isOpen ? 'flex' : 'none';
 
-            renderShopList();
+            renderShopList(true); // מיון "נקנו" לתחתית רק בעת פתיחה
         }
 
         btnBackHome.addEventListener('click', () => {
             currentViewedListId = null;
             shopScreen.classList.remove('active');
             homeScreen.classList.add('active');
+            renderHomeScreen(); // רענון הבית עם שינויים שהגיעו בזמן הקנייה
         });
 
         btnLockList.addEventListener('click', async () => {
-            const listIndex = allLists.findIndex(l => l.id === currentViewedListId);
-            if (listIndex > -1) {
+            const list = allLists.find(l => l.id === currentViewedListId);
+            if (list) {
                 if (confirm("לנעול את הרשימה ולסיים קנייה?")) {
-                    allLists[listIndex].status = 'locked';
-                    allLists[listIndex].lockedAt = getFormattedDate();
-                    await setDoc(listDocRef, { lists: allLists }, { merge: true });
-                    openShopView(currentViewedListId); // רענון תצוגה
+                    list.status = 'locked';
+                    list.lockedAt = getFormattedDate();
+                    pendingEcho = true;
+                    try { await setDoc(familyDocRef, { lists: allLists }, { merge: true }); }
+                    catch (e) { pendingEcho = false; }
+                    openShopView(currentViewedListId); // רענון תצוגה (רינדור מלא + כפתורים)
                 }
             }
         });
 
-        function renderShopList() {
+        // A2: HTML של פריט בודד — משותף לרינדור המלא ולהוספה אופטימית
+        function shopItemHtml(item, isOpen) {
+            return `
+                <div class="shop-item ${item.isPurchased ? 'purchased' : ''}" onclick="toggleItem('${item.id}', this)">
+                    <div class="checkbox-circle">${item.isPurchased ? '✔️' : ''}</div>
+                    <span>${escapeHtml(item.name)}</span>
+                    ${isOpen ? `<button class="delete-item-btn" onclick="deleteItem('${item.id}', event, this)">🗑️</button>` : ''}
+                </div>
+            `;
+        }
+
+        // רינדור מלא של רשימת הקניות. ממיינים "נקנו" לתחתית רק בפתיחה (sort=true),
+        // כדי שסימון פריט באמצע קנייה לא יגרום לו "לקפוץ" למקום אחר.
+        function renderShopList(sort = false) {
             const listToRender = allLists.find(l => l.id === currentViewedListId);
             if (!listToRender) return;
 
@@ -279,51 +439,71 @@
                 return;
             }
 
-            const sortedList = [...listToRender.items].sort((a, b) => a.isPurchased - b.isPurchased);
+            const items = sort
+                ? [...listToRender.items].sort((a, b) => a.isPurchased - b.isPurchased)
+                : listToRender.items;
             const isOpen = listToRender.status === 'open';
 
-            shopListArea.innerHTML = sortedList.map(item => `
-                <div class="shop-item ${item.isPurchased ? 'purchased' : ''}" onclick="toggleItem('${item.id}')">
-                    <div class="checkbox-circle">${item.isPurchased ? '✔️' : ''}</div>
-                    <span>${item.name}</span>
-                    ${isOpen ? `<button class="delete-item-btn" onclick="deleteItem('${item.id}', event)">🗑️</button>` : ''}
-                </div>
-            `).join('');
+            shopListArea.innerHTML = items.map(item => shopItemHtml(item, isOpen)).join('');
         }
 
-        window.toggleItem = async function(itemId) {
-            const listIndex = allLists.findIndex(l => l.id === currentViewedListId);
-            if (listIndex > -1) {
-                const itemIndex = allLists[listIndex].items.findIndex(i => i.id === itemId);
-                if (itemIndex > -1) {
-                    allLists[listIndex].items[itemIndex].isPurchased = !allLists[listIndex].items[itemIndex].isPurchased;
-                    await setDoc(listDocRef, { lists: allLists }, { merge: true });
-                }
+        window.toggleItem = async function(itemId, el) {
+            const list = allLists.find(l => l.id === currentViewedListId);
+            if (!list) return;
+            const item = list.items.find(i => i.id === itemId);
+            if (!item) return;
+
+            item.isPurchased = !item.isPurchased;
+            // A2: עדכון נקודתי של האלמנט בלבד (ללא בנייה מחדש וללא מיון מחדש)
+            if (el) {
+                el.classList.toggle('purchased', item.isPurchased);
+                const cb = el.querySelector('.checkbox-circle');
+                if (cb) cb.textContent = item.isPurchased ? '✔️' : '';
             }
+            pendingEcho = true;
+            try { await setDoc(familyDocRef, { lists: allLists }, { merge: true }); }
+            catch (e) { pendingEcho = false; renderShopList(); }
         }
 
-        window.deleteItem = async function(itemId, event) {
+        window.deleteItem = async function(itemId, event, btn) {
             event.stopPropagation();
-            const listIndex = allLists.findIndex(l => l.id === currentViewedListId);
-            if (listIndex > -1) {
-                allLists[listIndex].items = allLists[listIndex].items.filter(i => i.id !== itemId);
-                await setDoc(listDocRef, { lists: allLists }, { merge: true });
+            const list = allLists.find(l => l.id === currentViewedListId);
+            if (!list) return;
+
+            list.items = list.items.filter(i => i.id !== itemId);
+            // A2: הסרת השורה הזו בלבד מה-DOM
+            const row = btn && btn.closest('.shop-item');
+            if (row) row.remove();
+            if (list.items.length === 0) {
+                shopListArea.innerHTML = `<div class="empty-state">הרשימה ריקה.</div>`;
             }
+            pendingEcho = true;
+            try { await setDoc(familyDocRef, { lists: allLists }, { merge: true }); }
+            catch (e) { pendingEcho = false; renderShopList(); }
         }
 
         btnManualAdd.addEventListener('click', async () => {
             const itemName = manualItemInput.value.trim();
-            if (!itemName) return; 
-            const listIndex = allLists.findIndex(l => l.id === currentViewedListId);
-            if (listIndex > -1 && allLists[listIndex].status === 'open') {
-                allLists[listIndex].items.push({
+            if (!itemName) return;
+            const list = allLists.find(l => l.id === currentViewedListId);
+            if (list && list.status === 'open') {
+                const item = {
                     id: Date.now() + Math.random().toString(16).slice(2),
                     name: itemName,
                     isPurchased: false
-                });
-                await setDoc(listDocRef, { lists: allLists }, { merge: true });
-                manualItemInput.value = ""; 
-                manualItemInput.focus(); 
+                };
+                list.items.push(item);
+                // A2: הוספת שורה אחת בלבד (בסוף קבוצת ה"לא נקנו")
+                const empty = shopListArea.querySelector('.empty-state');
+                if (empty) empty.remove();
+                const firstPurchased = shopListArea.querySelector('.shop-item.purchased');
+                if (firstPurchased) firstPurchased.insertAdjacentHTML('beforebegin', shopItemHtml(item, true));
+                else shopListArea.insertAdjacentHTML('beforeend', shopItemHtml(item, true));
+                pendingEcho = true;
+                try { await setDoc(familyDocRef, { lists: allLists }, { merge: true }); }
+                catch (e) { pendingEcho = false; renderShopList(); }
+                manualItemInput.value = "";
+                manualItemInput.focus();
             }
         });
 
@@ -333,50 +513,64 @@
         * { box-sizing: border-box; font-family: system-ui, -apple-system, sans-serif; }
         body { background: #f0f2f5; margin: 0; padding: 0; display: flex; justify-content: center; }
         .app-container { width: 100%; max-width: 450px; background: white; min-height: 100vh; position: relative; box-shadow: 0 0 20px rgba(0,0,0,0.1); }
-        
+
         .screen { display: none; padding: 20px; padding-bottom: 80px; }
         .screen.active { display: block; animation: fadeIn 0.3s ease; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
 
         h1 { color: #075E54; text-align: center; font-size: 1.5rem; margin-bottom: 25px; border-bottom: 2px solid #eee; padding-bottom: 10px;}
-        
+
         button { width: 100%; padding: 16px; border: none; border-radius: 12px; font-weight: bold; font-size: 1.1rem; cursor: pointer; transition: 0.2s; margin-bottom: 15px; }
         button:active { transform: scale(0.98); }
-        
+
         .btn-paste { background: #25D366; color: white; box-shadow: 0 4px 10px rgba(37, 211, 102, 0.3); }
         .btn-add { background: #007bff; color: white; display: none; }
         .btn-create { background: #6c757d; color: white; }
         .btn-back { background: #eee; color: #333; padding: 10px 20px; width: auto; border-radius: 50px; font-size: 0.9rem; margin: 0;}
         .btn-lock { background: #ffc107; color: #333; border: 2px solid #e0a800; }
 
+        /* מסך התחברות / משפחה */
+        .auth-intro { text-align: center; color: #555; margin-bottom: 25px; line-height: 1.5; }
+        .auth-divider { display: flex; align-items: center; text-align: center; color: #aaa; margin: 5px 0 20px; }
+        .auth-divider::before, .auth-divider::after { content: ""; flex: 1; border-bottom: 1px solid #e0e0e0; }
+        .auth-divider span { padding: 0 12px; font-size: 0.9rem; }
+        .auth-input { width: 100%; padding: 14px; border: 1px solid #ccc; border-radius: 10px; font-size: 1rem; margin-bottom: 15px; text-align: center; letter-spacing: 1px; }
+        #authStatus { text-align: center; font-weight: bold; min-height: 24px; margin-top: 10px; font-size: 0.9rem; }
+
+        .family-bar { display: flex; justify-content: space-between; align-items: center; background: #f0fdf4; border: 1px solid #d3f0dd; border-radius: 10px; padding: 8px 12px; margin-bottom: 18px; font-size: 0.85rem; color: #333; }
+        .family-bar-label strong { letter-spacing: 0.5px; color: #075E54; }
+        .family-bar-actions { display: flex; gap: 6px; }
+        .mini-btn { width: auto; margin: 0; padding: 6px 10px; font-size: 0.8rem; border-radius: 8px; background: #e8e8e8; color: #333; box-shadow: none; }
+        .mini-btn-danger { background: #ffe9e9; color: #d33; }
+
         #previewArea { max-height: 150px; overflow-y: auto; background: #f9f9f9; border-radius: 8px; margin-bottom: 15px; border: 1px dashed #ccc; }
         .preview-item { padding: 8px 12px; border-bottom: 1px solid #eee; font-size: 0.9rem; color: #555; }
         #statusArea { text-align: center; font-weight: bold; min-height: 24px; margin-bottom: 10px; font-size: 0.9rem;}
 
         .section-title { font-size: 1.1rem; font-weight: bold; color: #333; margin: 25px 0 15px 0; display: block; }
-        
+
         /* רשימות בדף הבית */
-        .history-card { 
-            background: #fff; border: 1px solid #e0e0e0; padding: 15px; 
-            border-radius: 12px; margin-bottom: 12px; display: flex; 
-            justify-content: space-between; align-items: center; 
+        .history-card {
+            background: #fff; border: 1px solid #e0e0e0; padding: 15px;
+            border-radius: 12px; margin-bottom: 12px; display: flex;
+            justify-content: space-between; align-items: center;
             box-shadow: 0 2px 5px rgba(0,0,0,0.05); cursor: pointer;
         }
         .active-list-card { border: 2px solid #25D366; background: #f0fdf4; }
         .card-info { flex: 1; }
         .history-title { font-weight: bold; color: #333; margin-bottom: 4px; }
         .history-stats { font-size: 0.85rem; color: #777; }
-        
+
         .card-actions-row { display: flex; align-items: center; gap: 15px; }
         .card-arrow { font-size: 1.2rem; }
 
         /* כפתורי מחיקה */
-        .delete-entire-list-btn { 
-            width: auto; background: none; color: #ff4d4d; padding: 10px; 
+        .delete-entire-list-btn {
+            width: auto; background: none; color: #ff4d4d; padding: 10px;
             margin: 0; font-size: 1.3rem; box-shadow: none;
         }
-        .delete-item-btn { 
-            width: auto; background: none; color: #ccc; padding: 5px; 
+        .delete-item-btn {
+            width: auto; background: none; color: #ccc; padding: 5px;
             margin: 0 0 0 auto; font-size: 1.1rem; box-shadow: none;
         }
         .delete-item-btn:hover { color: #ff4d4d; }
@@ -389,14 +583,14 @@
         #manualItemInput { flex: 1; padding: 12px; border: 1px solid #ccc; border-radius: 10px; font-size: 1rem; }
         .btn-add-manual { width: auto; margin: 0; background: #007bff; color: white; padding: 0 20px; }
 
-        .shop-item { 
-            display: flex; align-items: center; padding: 15px; background: white; 
+        .shop-item {
+            display: flex; align-items: center; padding: 15px; background: white;
             margin-bottom: 10px; border-radius: 12px; border: 1px solid #eee;
             box-shadow: 0 2px 4px rgba(0,0,0,0.03); cursor: pointer;
         }
         .shop-item.purchased { background: #f9f9f9; border-color: transparent; opacity: 0.7; }
         .shop-item.purchased span { text-decoration: line-through; color: #888; }
-        
+
         .checkbox-circle {
             width: 24px; height: 24px; border-radius: 50%; border: 2px solid #ddd;
             margin-left: 15px; display: flex; align-items: center; justify-content: center;
@@ -409,15 +603,37 @@
 </head>
 <body>
     <div class="app-container">
-        
-        <div id="home-screen" class="screen active">
+
+        <div id="auth-screen" class="screen active">
             <h1>🛒 רשימת קניות</h1>
+            <p class="auth-intro">צור רשימה משפחתית חדשה, או הצטרף לרשימה קיימת באמצעות קוד המשפחה.</p>
+
+            <button id="btnCreateFamily" class="btn-paste">➕ צור רשימה משפחתית חדשה</button>
+
+            <div class="auth-divider"><span>או</span></div>
+
+            <input type="text" id="familyCodeInput" class="auth-input" placeholder="הדבק קוד משפחה...">
+            <button id="btnJoinFamily" class="btn-create">🔑 הצטרף עם קוד</button>
+
+            <div id="authStatus"></div>
+        </div>
+
+        <div id="home-screen" class="screen">
+            <h1>🛒 רשימת קניות</h1>
+
+            <div class="family-bar">
+                <span class="family-bar-label">קוד משפחה: <strong id="familyCodeLabel"></strong></span>
+                <div class="family-bar-actions">
+                    <button id="btnCopyCode" class="mini-btn">📋 העתק</button>
+                    <button id="btnLeaveFamily" class="mini-btn mini-btn-danger">יציאה</button>
+                </div>
+            </div>
 
             <button id="pasteBtn" class="btn-paste">📋 הדבק מווטסאפ</button>
             <div id="statusArea"></div>
             <div id="previewArea"></div>
             <button id="btnAddExisting" class="btn-add">📥 הוסף לרשימה הפעילה</button>
-            
+
             <button id="btnCreateList" class="btn-create">➕ פתח רשימה חדשה</button>
 
             <span class="section-title">היסטוריית רשימות</span>
@@ -429,7 +645,7 @@
                 <button id="btnBackHome" class="btn-back">חזור</button>
                 <h2 id="shopListTitle">עגלת קניות</h2>
             </div>
-            
+
             <button id="btnLockList" class="btn-lock">🔒 סיום קנייה ונעילה</button>
 
             <div id="manualAddArea" class="manual-add-area">
