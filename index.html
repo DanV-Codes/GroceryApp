@@ -7,7 +7,7 @@
 
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
-        import { getFirestore, doc, setDoc, getDoc, deleteDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+        import { getFirestore, doc, collection, setDoc, getDoc, deleteDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
         import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
 
         // הגדרות ה-Firebase שלך
@@ -34,7 +34,8 @@
 
         let currentUser = null;       // משתמש אנונימי (Firebase Auth)
         let familyCode = null;        // הסוד המשותף ששולט בגישה
-        let familyDocRef = null;      // מצביע למסמך המשפחה הנוכחי
+        let familyDocRef = null;      // מצביע למסמך המשפחה (לבדיקת קיום בהצטרפות)
+        let listsColRef = null;       // A1: אוסף המסמכים — families/{code}/lists
         let unsubscribeSnapshot = null;
         let pendingEcho = false;      // A3: דגל לדילוג על רינדור-הד של כתיבה מקומית
 
@@ -71,6 +72,11 @@
         function getFormattedDate() {
             const d = new Date();
             return `${d.getDate().toString().padStart(2, '0')}/${(d.getMonth()+1).toString().padStart(2, '0')}/${d.getFullYear()} ${d.getHours().toString().padStart(2,'0')}:${d.getMinutes().toString().padStart(2,'0')}`;
+        }
+
+        // A1: מחזיר מצביע למסמך רשימה ספציפי תחת families/{code}/lists/{id}
+        function getListRef(listId) {
+            return doc(db, "families", familyCode, "lists", String(listId));
         }
 
         // B1: בריחה מתווי HTML למניעת שבירת רינדור / XSS בתוכן שהוזן ע"י המשתמש
@@ -120,7 +126,8 @@
                 await setDoc(memberRef, { joinedAt: Date.now() }, { merge: true });
 
                 if (mode === 'create') {
-                    await setDoc(famRef, { lists: [] }, { merge: true });
+                    // A1: lists live in the subcollection; just create the container doc
+                    await setDoc(famRef, { createdAt: Date.now() }, { merge: true });
                 } else {
                     const snap = await getDoc(famRef);
                     if (!snap.exists()) {
@@ -133,6 +140,7 @@
 
                 familyCode = code;
                 familyDocRef = famRef;
+                listsColRef = collection(db, "families", code, "lists");
                 localStorage.setItem('familyCode', code);
                 enterApp(mode === 'create');
             } catch (err) {
@@ -146,10 +154,11 @@
             familyCodeLabel.textContent = familyCode;
 
             if (unsubscribeSnapshot) unsubscribeSnapshot();
-            unsubscribeSnapshot = onSnapshot(familyDocRef, (docSnap) => {
-                allLists = docSnap.exists() ? (docSnap.data().lists || []) : [];
+            // A1: מאזינים לאוסף הרשימות במקום למסמך אחד שמכיל את כולן
+            unsubscribeSnapshot = onSnapshot(listsColRef, (querySnap) => {
+                allLists = querySnap.docs.map(d => d.data());
                 // A3: התעלם מההד המקומי של כתיבה אופטימית — ה-DOM כבר עודכן מקומית.
-                if (docSnap.metadata.hasPendingWrites) return;
+                if (querySnap.metadata.hasPendingWrites) return;
                 // A3: התעלם מאישור השרת לכתיבה שלנו (כבר רונדרה אופטימית).
                 if (pendingEcho) { pendingEcho = false; return; }
                 // שינוי מרחוק (ממכשיר אחר) → רענון המסך הפעיל בלבד.
@@ -181,7 +190,7 @@
                 }
             } catch (e) { /* לא קריטי */ }
             localStorage.removeItem('familyCode');
-            familyCode = null; familyDocRef = null; allLists = []; currentViewedListId = null;
+            familyCode = null; familyDocRef = null; listsColRef = null; allLists = []; currentViewedListId = null;
             showAuthScreen();
         });
 
@@ -297,7 +306,8 @@
                 allLists = allLists.filter(l => l.id !== listId);
                 renderHomeScreen(); // A2/A3: עדכון אופטימי מיידי
                 pendingEcho = true;
-                try { await setDoc(familyDocRef, { lists: allLists }, { merge: true }); }
+                // A1: מחיקת המסמך של הרשימה הספציפית
+                try { await deleteDoc(getListRef(listId)); }
                 catch (e) { pendingEcho = false; renderHomeScreen(); }
                 showStatus("הרשימה נמחקה בהצלחה", "success");
             }
@@ -313,7 +323,7 @@
             allLists.push(newList);
             renderHomeScreen(); // A2/A3: עדכון אופטימי מיידי
             pendingEcho = true;
-            try { await setDoc(familyDocRef, { lists: allLists }, { merge: true }); }
+            try { await setDoc(getListRef(newList.id), newList); }
             catch (e) { pendingEcho = false; renderHomeScreen(); }
             showStatus("רשימה חדשה נפתחה!", "success");
         });
@@ -360,7 +370,7 @@
             openList.items = openList.items.concat(newItems);
             renderHomeScreen(); // A2/A3: עדכון אופטימי (מונה הפריטים)
             pendingEcho = true;
-            try { await setDoc(familyDocRef, { lists: allLists }, { merge: true }); }
+            try { await setDoc(getListRef(openList.id), openList); }
             catch (e) { pendingEcho = false; renderHomeScreen(); }
 
             pastedItems = [];
@@ -408,7 +418,7 @@
                     list.status = 'locked';
                     list.lockedAt = getFormattedDate();
                     pendingEcho = true;
-                    try { await setDoc(familyDocRef, { lists: allLists }, { merge: true }); }
+                    try { await setDoc(getListRef(list.id), list); }
                     catch (e) { pendingEcho = false; }
                     openShopView(currentViewedListId); // רענון תצוגה (רינדור מלא + כפתורים)
                 }
@@ -461,7 +471,7 @@
                 if (cb) cb.textContent = item.isPurchased ? '✔️' : '';
             }
             pendingEcho = true;
-            try { await setDoc(familyDocRef, { lists: allLists }, { merge: true }); }
+            try { await setDoc(getListRef(currentViewedListId), list); }
             catch (e) { pendingEcho = false; renderShopList(); }
         }
 
@@ -478,7 +488,7 @@
                 shopListArea.innerHTML = `<div class="empty-state">הרשימה ריקה.</div>`;
             }
             pendingEcho = true;
-            try { await setDoc(familyDocRef, { lists: allLists }, { merge: true }); }
+            try { await setDoc(getListRef(currentViewedListId), list); }
             catch (e) { pendingEcho = false; renderShopList(); }
         }
 
@@ -500,7 +510,7 @@
                 if (firstPurchased) firstPurchased.insertAdjacentHTML('beforebegin', shopItemHtml(item, true));
                 else shopListArea.insertAdjacentHTML('beforeend', shopItemHtml(item, true));
                 pendingEcho = true;
-                try { await setDoc(familyDocRef, { lists: allLists }, { merge: true }); }
+                try { await setDoc(getListRef(list.id), list); }
                 catch (e) { pendingEcho = false; renderShopList(); }
                 manualItemInput.value = "";
                 manualItemInput.focus();
