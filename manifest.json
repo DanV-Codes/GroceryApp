@@ -1,0 +1,19 @@
+{
+  "name": "רשימת קניות משפחתית",
+  "short_name": "קניות",
+  "description": "רשימת קניות משפחתית — שתפו פעולה בזמן אמת",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#075E54",
+  "dir": "rtl",
+  "lang": "he",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

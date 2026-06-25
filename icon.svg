@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="96" fill="#075E54"/>
+  <!-- handle bar -->
+  <line x1="76" y1="156" x2="184" y2="156" stroke="white" stroke-width="28" stroke-linecap="round"/>
+  <!-- pole down to cart body -->
+  <line x1="184" y1="156" x2="184" y2="204" stroke="white" stroke-width="28" stroke-linecap="round"/>
+  <!-- cart body -->
+  <rect x="184" y="204" width="252" height="132" rx="14" fill="none" stroke="white" stroke-width="28"/>
+  <!-- wheels -->
+  <circle cx="240" cy="384" r="32" fill="white"/>
+  <circle cx="380" cy="384" r="32" fill="white"/>
+</svg>

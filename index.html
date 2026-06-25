@@ -5,9 +5,17 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>רשימת קניות משפחתית</title>
 
+    <!-- B3: PWA — installable + offline -->
+    <link rel="manifest" href="/manifest.json">
+    <meta name="theme-color" content="#075E54">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="קניות">
+    <link rel="apple-touch-icon" href="/icon.svg">
+
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
-        import { getFirestore, doc, collection, setDoc, getDoc, deleteDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+        import { initializeFirestore, persistentLocalCache, doc, collection, setDoc, getDoc, deleteDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
         import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
 
         // הגדרות ה-Firebase שלך
@@ -22,7 +30,8 @@
         };
 
         const app = initializeApp(firebaseConfig);
-        const db = getFirestore(app);
+        // B3: IndexedDB persistence — reads/writes work offline and sync on reconnect
+        const db = initializeFirestore(app, { localCache: persistentLocalCache() });
         const auth = getAuth(app);
 
         // ==========================================
@@ -490,6 +499,11 @@
             pendingEcho = true;
             try { await setDoc(getListRef(currentViewedListId), list); }
             catch (e) { pendingEcho = false; renderShopList(); }
+        }
+
+        // B3: register service worker for offline app shell
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('/sw.js').catch(() => {});
         }
 
         btnManualAdd.addEventListener('click', async () => {
